@@ -30,23 +30,27 @@ NEWS_SOURCES = {
 # ─── Configuration ───────────────────────────────────────────
 TARGET_LANG = "ru"
 RAW_TTL     = 15 * 60  # Cache raw RSS data for 15 minutes
-LOG_FILE    = "news_debug.log"
-CACHE_DIR   = pathlib.Path(".rss_cache"); CACHE_DIR.mkdir(exist_ok=True)
-FONT_DIR    = pathlib.Path("ForExemple/INFO_Agent/fonts")
+# Vercel has a read-only filesystem, except for the /tmp directory.
+CACHE_DIR   = pathlib.Path("/tmp/rss_cache"); CACHE_DIR.mkdir(exist_ok=True)
+# Define paths relative to the app's location
+APP_DIR = pathlib.Path(__file__).parent if "__file__" in locals() else pathlib.Path.cwd()
+FONT_DIR    = APP_DIR / "fonts"
 FONT_BOLD_PATH = FONT_DIR / "Montserrat-Bold.woff"
 FONT_REGULAR_PATH = FONT_DIR / "Montserrat-Regular.woff"
 
 
 # ─── Logger ───────────────────────────────────────────────────
-def init_logger(path):
+def init_logger():
+    """Initializes a console logger."""
     log = logging.getLogger("NewsAgg")
     if not log.handlers:
         log.setLevel(logging.INFO)
-        fh = logging.FileHandler(path, encoding="utf-8")
-        fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
-        log.addHandler(fh)
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+        handler.setFormatter(formatter)
+        log.addHandler(handler)
     return log
-logger = init_logger(LOG_FILE)
+logger = init_logger()
 
 # ─── Translation ──────────────────────────────────────────
 @st.cache_data(ttl=24*3600, show_spinner=False)
@@ -126,7 +130,8 @@ def collect_news(sources: dict, need_translate: bool):
         feed = feedparser.parse(xml)
         stats[src]["total"] = len(feed.entries)
         logger.info("%s → %s entries", src, len(feed.entries))
-        for e in feed.entries:
+        # Process only the first 10 entries to improve performance
+        for e in feed.entries[:10]:
             link_clean = e.link.split("?", 1)[0]
             if link_clean in seen: continue
             seen.add(link_clean)
@@ -243,7 +248,7 @@ else:
     st.success(f"Найдено новостей: {len(news_items)}")
     for n in news_items:
         pictogram_img = create_pictogram(n["title"], n["desc"])
-        st.image(pictogram_img, use_column_width=True)
+        st.image(pictogram_img, use_container_width=True)
 
         with st.expander(f"Подробнее: {n['orig_title']}"):
             st.write(f"**Источник:** {n['source']}")

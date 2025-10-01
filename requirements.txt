@@ -4,3 +4,4 @@ feedparser
 beautifulsoup4
 deep_translator
 Pillow
+lxml
