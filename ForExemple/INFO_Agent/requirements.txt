@@ -1,0 +1,6 @@
+aiohttp>=3.9
+aiolimiter>=1.1
+backoff>=2.2
+feedparser>=6.0
+# Для кастомного резолвера (по желанию):
+aiodns>=3.0
