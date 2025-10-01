@@ -4,8 +4,11 @@
 import os, re, time, pickle, hashlib, logging, pathlib, html
 from datetime import datetime, timezone
 from collections import defaultdict
+from typing import Optional
 
-import requests, feedparser, streamlit as st
+import requests
+import feedparser
+import streamlit as st
 from bs4 import BeautifulSoup
 from deep_translator import GoogleTranslator
 from requests.adapters import HTTPAdapter
@@ -29,14 +32,32 @@ NEWS_SOURCES = {
 
 # ─── Configuration ───────────────────────────────────────────
 TARGET_LANG = "ru"
-RAW_TTL     = 15 * 60  # Cache raw RSS data for 15 minutes
+RAW_TTL = 15 * 60  # Cache raw RSS data for 15 minutes
 
+# Vercel has a read-only filesystem, except for the /tmp directory.
+CACHE_DIR = pathlib.Path("/tmp/rss_cache")
+CACHE_DIR.mkdir(exist_ok=True)
+
+# Define paths relative to the app's location
+APP_DIR = pathlib.Path(__file__).parent if "__file__" in globals() else pathlib.Path.cwd()
+FONT_DIR = APP_DIR / "fonts"
 FONT_BOLD_PATH = FONT_DIR / "Montserrat-Bold.woff"
 FONT_REGULAR_PATH = FONT_DIR / "Montserrat-Regular.woff"
 
 
 # ─── Logger ───────────────────────────────────────────────────
+def init_logger():
+    """Initializes a console logger."""
+    log = logging.getLogger("NewsAgg")
+    if not log.handlers:
+        log.setLevel(logging.INFO)
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+        handler.setFormatter(formatter)
+        log.addHandler(handler)
+    return log
 
+logger = init_logger()
 
 # ─── Translation ──────────────────────────────────────────
 @st.cache_data(ttl=24*3600, show_spinner=False)
@@ -56,16 +77,25 @@ def clean_html(raw: str) -> str:
     txt = BeautifulSoup(raw, "lxml").get_text(" ", strip=True)
     return html.unescape(re.sub(r"\s{2,}", " ", txt).strip())
 
-def first_image(entry) -> str | None:
+def first_image(entry) -> Optional[str]:
+    # Check common attributes
     for attr in ("media_content", "media_thumbnail"):
         if attr in entry:
             for m in entry[attr]:
-                if "url" in m: return m["url"]
+                if isinstance(m, dict) and "url" in m:
+                    return m["url"]
+
+    # Check links
     for link in entry.get("links", []):
-        if link.get("type", "").startswith("image"): return link.get("href")
-    if "summary" in entry:
-        m = re.search(r'<img .*?src="([^"]+)"', entry.summary, re.I)
-        if m: return m.group(1)
+        if isinstance(link, dict) and link.get("type", "").startswith("image"):
+            return link.get("href")
+
+    # Fallback: look for an <img> in the summary/html
+    summary = getattr(entry, "summary", None)
+    if summary:
+        m = re.search(r'<img .*?src="([^"]+)"', summary, re.I)
+        if m:
+            return m.group(1)
     return None
 
 # ─── HTTP Session ───────────────────────────
@@ -83,7 +113,7 @@ def proxy_url(orig: str) -> str:
     return f"https://r.jina.ai/{orig}"
 
 # ─── RSS Fetching ───────────────────────────
-def load_raw_rss(url: str) -> bytes | None:
+def load_raw_rss(url: str) -> Optional[bytes]:
     fn = CACHE_DIR / (hashlib.md5(url.encode()).hexdigest() + ".pkl")
     if fn.exists():
         ts, data = pickle.loads(fn.read_bytes())
@@ -112,30 +142,40 @@ def collect_news(sources: dict, need_translate: bool):
     seen = set()
     for src, url in sources.items():
         xml = load_raw_rss(url)
-        if not xml: continue
+        if not xml:
+            continue
         feed = feedparser.parse(xml)
         stats[src]["total"] = len(feed.entries)
         logger.info("%s → %s entries", src, len(feed.entries))
 
-            link_clean = e.link.split("?", 1)[0]
-            if link_clean in seen: continue
+        # Process only the first 10 entries to improve performance
+        for e in feed.entries[:10]:
+            link_clean = getattr(e, "link", "").split("?", 1)[0]
+            if not link_clean:
+                continue
+            if link_clean in seen:
+                continue
             seen.add(link_clean)
 
-            title_o = e.title
+            title_o = getattr(e, "title", "")
             desc_o = clean_html(getattr(e, "summary", "") or getattr(e, "description", ""))
 
             title_t = translate(title_o, need_translate)
             desc_t = translate(desc_o, need_translate)
 
-            dt = datetime.utcnow().replace(tzinfo=timezone.utc)
+            dt = datetime.now(timezone.utc)
             if hasattr(e, "published_parsed") and e.published_parsed:
                 dt = datetime.fromtimestamp(time.mktime(e.published_parsed), tz=timezone.utc)
 
             news.append({
-                "title": title_t, "orig_title": title_o,
-                "desc": desc_t, "orig_desc": desc_o,
-                "image": first_image(e), "link": link_clean,
-                "source": src, "time": dt,
+                "title": title_t,
+                "orig_title": title_o,
+                "desc": desc_t,
+                "orig_desc": desc_o,
+                "image": first_image(e),
+                "link": link_clean,
+                "source": src,
+                "time": dt,
             })
     news.sort(key=lambda x: x["time"], reverse=True)
     return news, stats
