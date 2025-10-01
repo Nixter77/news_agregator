@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Новости — Конструктивистский агрегатор</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;800&display=swap" rel="stylesheet" />
+    <style>
+        :root {
+            --ink: #1b1b1b;
+            --paper: #f4f1de;
+            --brick: #d62828;
+            --accent: #003049;
+            --sand: #e8d5b5;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: 'Montserrat', 'DejaVu Sans', sans-serif;
+            background: var(--paper);
+            color: var(--ink);
+            min-height: 100vh;
+        }
+
+        body::before, body::after {
+            content: "";
+            position: fixed;
+            inset: 0;
+            background: conic-gradient(from 90deg at 10% 10%, rgba(214,40,40,0.13) 0 25%, transparent 25% 100%),
+                        radial-gradient(circle at 85% 18%, rgba(0,48,73,0.08) 0 50%, transparent 52% 100%);
+            z-index: -2;
+        }
+
+        main {
+            max-width: 1180px;
+            margin: 0 auto;
+            padding: 48px 24px 96px;
+        }
+
+        header.hero {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        header.hero h1 {
+            margin: 0;
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            font-weight: 800;
+            font-size: clamp(2.4rem, 5vw, 3.6rem);
+            color: var(--accent);
+            position: relative;
+        }
+
+        header.hero h1::after {
+            content: "";
+            position: absolute;
+            left: 0;
+            bottom: -10px;
+            width: clamp(120px, 40vw, 280px);
+            height: 12px;
+            background: var(--brick);
+        }
+
+        .tagline {
+            max-width: 720px;
+            font-size: 1.05rem;
+            line-height: 1.6;
+        }
+
+        form.controls {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto auto;
+            gap: 12px;
+            flex-wrap: wrap;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.6);
+            padding: 16px 18px;
+            border: 2px solid var(--ink);
+            box-shadow: 16px 16px 0 rgba(0,0,0,0.1);
+        }
+
+        form.controls input[type="text"] {
+            font-family: inherit;
+            border: none;
+            border-bottom: 2px solid var(--ink);
+            padding: 10px 12px;
+            font-size: 1rem;
+            background: transparent;
+            outline: none;
+        }
+
+        form.controls button {
+            background: var(--brick);
+            color: #fff;
+            border: 0;
+            padding: 12px 18px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        form.controls button:hover {
+            transform: translate(-2px, -2px);
+            box-shadow: 6px 6px 0 var(--accent);
+        }
+
+        .toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+
+        .toggle input {
+            accent-color: var(--brick);
+            width: 18px;
+            height: 18px;
+        }
+
+        .summary-bar {
+            margin: 24px 0 32px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            background: rgba(0,0,0,0.04);
+            padding: 14px 18px;
+            border-left: 6px solid var(--brick);
+            font-size: 0.95rem;
+        }
+
+        .summary-bar strong {
+            font-weight: 700;
+        }
+
+        .cards {
+            display: grid;
+            gap: 28px;
+        }
+
+        article.card {
+            position: relative;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr);
+            gap: 24px;
+            padding: 28px;
+            background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(232,213,181,0.8));
+            border: 3px solid var(--ink);
+            box-shadow: 18px 18px 0 rgba(0,0,0,0.12);
+            overflow: hidden;
+        }
+
+        article.card::before {
+            content: "";
+            position: absolute;
+            top: -30px;
+            right: -30px;
+            width: 180px;
+            height: 180px;
+            background: var(--accent, #003049);
+            transform: rotate(45deg);
+            opacity: 0.12;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 18px;
+            color: var(--accent);
+            font-weight: 700;
+        }
+
+        .pictogram-wrapper {
+            position: relative;
+            background: linear-gradient(135deg, var(--accent, #003049), var(--brick));
+            padding: 12px;
+            border: 2px solid var(--ink);
+            box-shadow: 10px 10px 0 rgba(0,0,0,0.15);
+        }
+
+        .pictogram-wrapper img {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+
+        .card-body h2 {
+            margin: 0 0 12px;
+            font-size: 1.6rem;
+            text-transform: uppercase;
+            line-height: 1.2;
+        }
+
+        .card-body .translated {
+            font-weight: 700;
+            color: var(--ink);
+        }
+
+        .card-body .original {
+            margin-top: 10px;
+            font-size: 0.95rem;
+            line-height: 1.5;
+            color: rgba(0,0,0,0.72);
+        }
+
+        .card-body .description {
+            margin-top: 16px;
+            font-size: 1rem;
+            line-height: 1.6;
+        }
+
+        .original-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(0,0,0,0.07);
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            letter-spacing: 1px;
+        }
+
+        .card-footer {
+            margin-top: auto;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .card-footer a {
+            text-decoration: none;
+            border: 2px solid var(--accent);
+            color: var(--accent);
+            padding: 10px 16px;
+            text-transform: uppercase;
+            font-weight: 700;
+            letter-spacing: 1px;
+            transition: background 0.2s ease, color 0.2s ease;
+        }
+
+        .card-footer a:hover {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .card-footer .timestamp {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: rgba(0,0,0,0.7);
+        }
+
+        .no-results {
+            padding: 60px 24px;
+            text-align: center;
+            border: 3px dashed rgba(0,0,0,0.2);
+            background: rgba(255,255,255,0.66);
+            font-size: 1.1rem;
+        }
+
+        footer.note {
+            margin-top: 64px;
+            padding: 18px;
+            border-top: 2px solid rgba(0,0,0,0.2);
+            font-size: 0.9rem;
+            color: rgba(0,0,0,0.68);
+        }
+
+        @media (max-width: 992px) {
+            article.card {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 640px) {
+            main {
+                padding: 32px 14px 64px;
+            }
+
+            form.controls {
+                grid-template-columns: 1fr;
+                box-shadow: 12px 12px 0 rgba(0,0,0,0.1);
+            }
+
+            form.controls button {
+                width: 100%;
+            }
+
+            .card-body h2 {
+                font-size: 1.35rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <header class="hero">
+            <h1>Новости в плакатах</h1>
+            <p class="tagline">Свежая картина мира из внешних источников, переведённая и превращённая в конструктивистские пиктограммы. Выберите тему, включите перевод и смотрите на события через форму и цвет.</p>
+        </header>
+
+        <form class="controls" method="get">
+            <input type="text" name="q" value="{{ query }}" placeholder="Поиск по заголовкам, описаниям и источникам" />
+            <input type="hidden" name="translate" value="off" />
+            <label class="toggle">
+                <input type="checkbox" name="translate" value="on" {% if translate %}checked{% endif %} />
+                <span>Перевод на русский</span>
+            </label>
+            <button type="submit">Искать</button>
+        </form>
+
+        <div class="summary-bar">
+            <span><strong>{{ matches }}</strong> материалов отобрано из <strong>{{ total }}</strong> загруженных.</span>
+            {% if query %}
+            <span>Запрос: «{{ query }}»</span>
+            <a href="/" style="margin-left:auto; text-transform:uppercase; font-weight:700;">Сбросить поиск</a>
+            {% endif %}
+            <span>Последнее обновление: {{ updated_at }}</span>
+        </div>
+
+        {% if items %}
+        <section class="cards">
+            {% for item in items %}
+            <article class="card" style="--accent: {{ item.accent }};">
+                <div class="card-header">
+                    <span>{{ item.source }}</span>
+                    <span>{{ item.time }}</span>
+                </div>
+                <div class="pictogram-wrapper">
+                    <img src="data:image/png;base64,{{ item.pictogram }}" alt="Плакат новости" loading="lazy" />
+                </div>
+                <div class="card-body">
+                    <h2 class="translated">{{ item.title_display }}</h2>
+                    <div class="original">
+                        <span class="original-label">Оригинал</span>
+                        <div>{{ item.orig_title }}</div>
+                    </div>
+                    <p class="description">{{ item.summary_display }}</p>
+                    {% if item.orig_desc %}
+                    <p class="original">{{ item.orig_desc }}</p>
+                    {% endif %}
+                    <div class="card-footer">
+                        <a href="{{ item.link }}" target="_blank" rel="noopener">Читать источник</a>
+                        {% if item.image %}
+                        <a href="{{ item.image }}" target="_blank" rel="noopener">Первичный визуал</a>
+                        {% endif %}
+                        <span class="timestamp">{{ item.relative_time }}</span>
+                    </div>
+                </div>
+            </article>
+            {% endfor %}
+        </section>
+        {% else %}
+        <div class="no-results">Не найдено материалов по текущему запросу. Попробуйте изменить ключевые слова или отключите фильтр.</div>
+        {% endif %}
+
+        <footer class="note">
+            Источники: BBC, Al Jazeera, Jerusalem Post, Haaretz, Times of Israel, Kyiv Independent, Guardian, Associated Press, Deutsche Welle, Sky News. Данные обновляются на лету; кэширование используется для ускорения и экономии запросов.
+        </footer>
+    </main>
+</body>
+</html>

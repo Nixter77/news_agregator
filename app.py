@@ -1,285 +1,366 @@
-# ──────────────────────────────────────────────────────────────
-#  News Pictogram Aggregator
-# ──────────────────────────────────────────────────────────────
-import os, re, time, pickle, hashlib, logging, pathlib, html
-from datetime import datetime, timezone
-from collections import defaultdict
-from typing import Optional
+"""FastAPI implementation of the news pictogram aggregator for Vercel."""
+from __future__ import annotations
 
-import requests
+import base64
+import hashlib
+import io
+import os
+import pathlib
+import random
+import re
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from functools import lru_cache
+from typing import Dict, Iterable, List, Optional
+
 import feedparser
-import streamlit as st
+import requests
 from bs4 import BeautifulSoup
 from deep_translator import GoogleTranslator
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from PIL import Image, ImageDraw, ImageFont
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from PIL import Image, ImageDraw, ImageFont
 
-# ─── RSS Sources ──────────────────────────────────────────────
-# Note: Some feeds may be unreliable. They are kept here for demonstration.
-NEWS_SOURCES = {
-    "BBC News"        : "https://feeds.bbci.co.uk/news/world/rss.xml",
-    "Al Jazeera"      : "https://www.aljazeera.com/xml/rss/all.xml",
-    "Jerusalem Post"  : "https://www.jpost.com/rss/rssfeedsfrontpage.aspx",
-    "Haaretz"         : "https://rsshub.app/haaretz/english",
-    "Times of Israel" : "https://www.timesofisrael.com/feed/",
-    "Kyiv Independent": "https://kyivindependent.com/feed/",
-    "Guardian World"  : "https://www.theguardian.com/world/rss",
-    "Associated Press": "https://apnews.com/hub/ap-top-news?outputType=rss",
-    "DW"              : "https://rss.dw.com/rdf/rss-en-all",
-    "Sky News"        : "https://feeds.skynews.com/feeds/rss/world.xml",
-}
-
-# ─── Configuration ───────────────────────────────────────────
-TARGET_LANG = "ru"
-RAW_TTL = 15 * 60  # Cache raw RSS data for 15 minutes
-
-# Vercel has a read-only filesystem, except for the /tmp directory.
-CACHE_DIR = pathlib.Path("/tmp/rss_cache")
+# ─── Configuration ─────────────────────────────────────────────────────────────
+TARGET_LANG = os.environ.get("NEWS_TARGET_LANG", "ru")
+CACHE_TTL = int(os.environ.get("NEWS_CACHE_TTL", 15 * 60))  # seconds
+ITEMS_PER_SOURCE = int(os.environ.get("NEWS_ITEMS_PER_SOURCE", 8))
+CACHE_DIR = pathlib.Path(os.environ.get("NEWS_CACHE_DIR", "/tmp/rss_cache"))
 CACHE_DIR.mkdir(exist_ok=True)
 
-# Define paths relative to the app's location
-APP_DIR = pathlib.Path(__file__).parent if "__file__" in globals() else pathlib.Path.cwd()
-FONT_DIR = APP_DIR / "fonts"
-FONT_BOLD_PATH = FONT_DIR / "Montserrat-Bold.woff"
-FONT_REGULAR_PATH = FONT_DIR / "Montserrat-Regular.woff"
+NEWS_SOURCES: Dict[str, str] = {
+    "BBC News": "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "Al Jazeera": "https://www.aljazeera.com/xml/rss/all.xml",
+    "Jerusalem Post": "https://www.jpost.com/rss/rssfeedsfrontpage.aspx",
+    "Haaretz": "https://rsshub.app/haaretz/english",
+    "Times of Israel": "https://www.timesofisrael.com/feed/",
+    "Kyiv Independent": "https://kyivindependent.com/feed/",
+    "Guardian World": "https://www.theguardian.com/world/rss",
+    "Associated Press": "https://apnews.com/hub/ap-top-news?outputType=rss",
+    "Deutsche Welle": "https://rss.dw.com/rdf/rss-en-all",
+    "Sky News": "https://feeds.skynews.com/feeds/rss/world.xml",
+}
 
+ACCENT_COLORS = [
+    "#d62828",
+    "#003049",
+    "#f77f00",
+    "#2a9d8f",
+    "#780116",
+    "#0a2463",
+]
 
-# ─── Logger ───────────────────────────────────────────────────
-def init_logger():
-    """Initializes a console logger."""
-    log = logging.getLogger("NewsAgg")
-    if not log.handlers:
-        log.setLevel(logging.INFO)
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-        handler.setFormatter(formatter)
-        log.addHandler(handler)
-    return log
+# ─── HTTP Session ─────────────────────────────────────────────────────────────
+def _build_session() -> requests.Session:
+    session = requests.Session()
+    retry = Retry(total=3, backoff_factor=1, status_forcelist=(429, 500, 502, 503, 504))
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    session.headers.update(
+        {
+            "user-agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/118.0.0.0 Safari/537.36"
+            )
+        }
+    )
+    return session
 
-logger = init_logger()
+SESSION = _build_session()
 
-# ─── Translation ──────────────────────────────────────────
-@st.cache_data(ttl=24*3600, show_spinner=False)
-def translate(txt: str, enabled=True):
-    """Translate text to Russian, with caching."""
-    if not enabled or not txt:
-        return txt
+# ─── Utility Helpers ───────────────────────────────────────────────────────────
+@lru_cache(maxsize=512)
+def translate_text(text: str, target_lang: str = TARGET_LANG) -> str:
+    if not text:
+        return ""
     try:
-        return GoogleTranslator(source="auto", target=TARGET_LANG).translate(txt[:4500])
-    except Exception as e:
-        logger.error("Translate error: %s", e)
-        return txt
+        return GoogleTranslator(source="auto", target=target_lang).translate(text[:4500])
+    except Exception:
+        # If translation fails, return original text.
+        return text
 
-# ─── HTML & Image Utilities ──────────────────────────────────────────────────
+
 def clean_html(raw: str) -> str:
-    if not raw: return ""
-    txt = BeautifulSoup(raw, "lxml").get_text(" ", strip=True)
-    return html.unescape(re.sub(r"\s{2,}", " ", txt).strip())
+    if not raw:
+        return ""
+    text = BeautifulSoup(raw, "html.parser").get_text(" ", strip=True)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip()
+
 
 def first_image(entry) -> Optional[str]:
-    # Check common attributes
     for attr in ("media_content", "media_thumbnail"):
         if attr in entry:
-            for m in entry[attr]:
-                if isinstance(m, dict) and "url" in m:
-                    return m["url"]
-
-    # Check links
+            for media in entry[attr]:
+                if isinstance(media, dict) and media.get("url"):
+                    return media["url"]
     for link in entry.get("links", []):
         if isinstance(link, dict) and link.get("type", "").startswith("image"):
             return link.get("href")
-
-    # Fallback: look for an <img> in the summary/html
     summary = getattr(entry, "summary", None)
     if summary:
-        m = re.search(r'<img .*?src="([^"]+)"', summary, re.I)
-        if m:
-            return m.group(1)
+        match = re.search(r'<img[^>]+src="([^"]+)"', summary, re.I)
+        if match:
+            return match.group(1)
     return None
 
-# ─── HTTP Session ───────────────────────────
-def make_session() -> requests.Session:
-    sess = requests.Session()
-    retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-    adapter = HTTPAdapter(max_retries=retry)
-    sess.mount("https://", adapter)
-    sess.mount("http://", adapter)
-    return sess
-SESSION = make_session()
 
-def proxy_url(orig: str) -> str:
-    """Use a proxy for problematic URLs."""
-    return f"https://r.jina.ai/{orig}"
-
-# ─── RSS Fetching ───────────────────────────
 def load_raw_rss(url: str) -> Optional[bytes]:
-    fn = CACHE_DIR / (hashlib.md5(url.encode()).hexdigest() + ".pkl")
-    if fn.exists():
-        ts, data = pickle.loads(fn.read_bytes())
-        if time.time() - ts < RAW_TTL:
-            return data
-    try:
-        headers = {"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+    cache_file = CACHE_DIR / f"{hashlib.md5(url.encode()).hexdigest()}.bin"
+    if cache_file.exists():
         try:
-            resp = SESSION.get(url, headers=headers, timeout=20)
-            resp.raise_for_status()
-        except requests.exceptions.RequestException:
-            p_url = proxy_url(url)
-            logger.warning("Retry via proxy: %s", p_url)
-            resp = SESSION.get(p_url, headers=headers, timeout=25)
-            resp.raise_for_status()
-        data = resp.content
-        fn.write_bytes(pickle.dumps((time.time(), data)))
-        return data
-    except Exception as e:
-        logger.error("HTTP error %s → %s", url, e)
+            ts_raw, payload = cache_file.read_bytes().split(b"\n", 1)
+            timestamp = float(ts_raw)
+        except ValueError:
+            timestamp, payload = 0.0, b""
+        if payload and (time.time() - timestamp) < CACHE_TTL:
+            return payload
+    try:
+        response = SESSION.get(url, timeout=20)
+        response.raise_for_status()
+        payload = response.content
+        cache_file.write_bytes(f"{time.time()}\n".encode() + payload)
+        return payload
+    except requests.RequestException:
         return None
 
-# ─── News Collection ───────────────────────────────────────────
-def collect_news(sources: dict, need_translate: bool):
-    news, stats = [], defaultdict(lambda: {"total": 0, "matched": 0})
-    seen = set()
-    for src, url in sources.items():
-        xml = load_raw_rss(url)
-        if not xml:
-            continue
-        feed = feedparser.parse(xml)
-        stats[src]["total"] = len(feed.entries)
-        logger.info("%s → %s entries", src, len(feed.entries))
 
-        # Process only the first 10 entries to improve performance
-        for e in feed.entries[:10]:
-            link_clean = getattr(e, "link", "").split("?", 1)[0]
-            if not link_clean:
+@dataclass
+class NewsItem:
+    title: str
+    description: str
+    link: str
+    source: str
+    published: datetime
+    image: Optional[str]
+    orig_title: str
+    orig_description: str
+
+
+class NewsCache:
+    def __init__(self) -> None:
+        self.timestamp = 0.0
+        self.items: List[NewsItem] = []
+
+    def refresh(self) -> None:
+        aggregated: List[NewsItem] = []
+        seen_links = set()
+        for source, url in NEWS_SOURCES.items():
+            feed_bytes = load_raw_rss(url)
+            if not feed_bytes:
                 continue
-            if link_clean in seen:
-                continue
-            seen.add(link_clean)
+            parsed = feedparser.parse(feed_bytes)
+            entries = parsed.entries[:ITEMS_PER_SOURCE]
+            for entry in entries:
+                link = getattr(entry, "link", "").split("?", 1)[0]
+                if not link or link in seen_links:
+                    continue
+                seen_links.add(link)
 
-            title_o = getattr(e, "title", "")
-            desc_o = clean_html(getattr(e, "summary", "") or getattr(e, "description", ""))
+                original_title = getattr(entry, "title", "")
+                raw_summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
+                original_description = clean_html(raw_summary)
 
-            title_t = translate(title_o, need_translate)
-            desc_t = translate(desc_o, need_translate)
+                published = datetime.now(timezone.utc)
+                if getattr(entry, "published_parsed", None):
+                    published = datetime.fromtimestamp(
+                        time.mktime(entry.published_parsed), tz=timezone.utc
+                    )
 
-            dt = datetime.now(timezone.utc)
-            if hasattr(e, "published_parsed") and e.published_parsed:
-                dt = datetime.fromtimestamp(time.mktime(e.published_parsed), tz=timezone.utc)
+                aggregated.append(
+                    NewsItem(
+                        title=original_title,
+                        description=original_description,
+                        link=link,
+                        source=source,
+                        published=published,
+                        image=first_image(entry),
+                        orig_title=original_title,
+                        orig_description=original_description,
+                    )
+                )
+        aggregated.sort(key=lambda x: x.published, reverse=True)
+        self.items = aggregated
+        self.timestamp = time.time()
 
-            news.append({
-                "title": title_t,
-                "orig_title": title_o,
-                "desc": desc_t,
-                "orig_desc": desc_o,
-                "image": first_image(e),
-                "link": link_clean,
-                "source": src,
-                "time": dt,
-            })
-    news.sort(key=lambda x: x["time"], reverse=True)
-    return news, stats
+    def get_items(self) -> List[NewsItem]:
+        if not self.items or (time.time() - self.timestamp) > CACHE_TTL:
+            self.refresh()
+        return self.items
 
-# ─── Pictogram Generation ───────────────────────────────────
-@st.cache_resource
-def get_font(font_path, size):
-    """Load a font and cache it."""
-    if not font_path.exists():
-        logger.error(f"Font not found: {font_path}")
+
+NEWS_CACHE = NewsCache()
+
+# ─── Pictogram Rendering ───────────────────────────────────────────────────────
+def _measure_text(font: ImageFont.FreeTypeFont, text: str) -> float:
+    if hasattr(font, "getlength"):
+        return font.getlength(text)
+    return font.getsize(text)[0]
+
+
+@lru_cache(maxsize=32)
+def get_font(name: str, size: int) -> ImageFont.FreeTypeFont:
+    try:
+        return ImageFont.truetype(name, size)
+    except OSError:
         return ImageFont.load_default()
-    return ImageFont.truetype(str(font_path), size)
 
-def wrap_text(text: str, font, max_width: int):
-    """Wrap text to fit within a specified width."""
-    lines = []
-    if not text: return lines
-    for line in text.split('\n'):
-        words = line.split(' ')
-        current_line = ''
-        for word in words:
-            if font.getlength(current_line + word) <= max_width:
-                current_line += word + ' '
-            else:
-                lines.append(current_line.strip())
-                current_line = word + ' '
-        lines.append(current_line.strip())
+
+def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[str]:
+    words = text.split()
+    if not words:
+        return []
+    lines: List[str] = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        if _measure_text(font, candidate) <= max_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
     return lines
 
-@st.cache_data(show_spinner=False)
-def create_pictogram(title: str, summary: str, width=800, height=400):
-    """Generate a constructivist-style pictogram for a news item."""
-    BG_COLOR, RECT_COLOR, TEXT_COLOR = "white", "#D32F2F", "black"
 
-    title_font = get_font(FONT_BOLD_PATH, 42)
-    summary_font = get_font(FONT_REGULAR_PATH, 22)
+def create_pictogram(title: str, summary: str, accent: str) -> str:
+    width, height = 720, 360
+    base = Image.new("RGB", (width, height), "#f4f1de")
+    draw = ImageDraw.Draw(base)
 
-    img = Image.new("RGB", (width, height), color=BG_COLOR)
-    draw = ImageDraw.Draw(img)
-
-    draw.rectangle([0, 0, width // 3, height], fill=RECT_COLOR)
-
-    text_x = width // 3 + 20
-    text_width = width - text_x - 20
-
-    title_lines = wrap_text(title, title_font, text_width)
-    y = 40
-    for line in title_lines[:3]: # Limit title lines
-        draw.text((text_x, y), line, font=title_font, fill=TEXT_COLOR)
-        y += 50
-
-    y += 10
-    summary_lines = wrap_text(summary, summary_font, text_width)
-    for line in summary_lines[:5]: # Limit summary lines
-        draw.text((text_x, y), line, font=summary_font, fill=TEXT_COLOR)
-        y += 30
-        if y > height - 40: break
-
-    return img
-
-# ─── UI ───────────────────────────────────────────────────────
-st.set_page_config("News Pictogram Aggregator", layout="wide")
-st.title("📰 Новости в плакатах")
-
-# --- Sidebar ---
-with st.sidebar:
-    st.header("⚙️ Настройки")
-    st.checkbox("Переводить на русский", True, key="tr_flag")
-
-    selected_sources = st.multiselect(
-        "Выберите источники:",
-        options=list(NEWS_SOURCES.keys()),
-        default=list(NEWS_SOURCES.keys())[:3]
+    draw.rectangle([(0, 0), (width * 0.28, height)], fill=accent)
+    draw.polygon(
+        [
+            (width * 0.32, 0),
+            (width * 0.62, height * 0.12),
+            (width * 0.38, height * 0.42),
+        ],
+        fill="#1b1b1b",
     )
+    draw.rectangle([(width * 0.35, height * 0.68), (width * 0.85, height * 0.82)], fill="#d62828")
 
-    if st.button("♻️ Очистить кеш"):
-        st.cache_data.clear()
-        st.cache_resource.clear()
-        st.experimental_rerun()
+    title_font = get_font("DejaVuSans-Bold.ttf", 38)
+    summary_font = get_font("DejaVuSans.ttf", 22)
 
-# --- Main Logic ---
-if not selected_sources:
-    st.info("Пожалуйста, выберите хотя бы один источник в боковой панели.")
-    st.stop()
+    title_area_x = int(width * 0.33)
+    title_area_width = int(width * 0.62)
 
-sources_to_fetch = {k: v for k, v in NEWS_SOURCES.items() if k in selected_sources}
+    title_lines = wrap_text(title.upper(), title_font, title_area_width)
+    y = 36
+    for line in title_lines[:3]:
+        draw.text((title_area_x, y), line, fill="#0b090a", font=title_font)
+        y += title_font.size + 6
 
-with st.spinner("Загрузка и обработка новостей..."):
-    news_items, stats = collect_news(sources_to_fetch, st.session_state.tr_flag)
+    summary_lines = wrap_text(summary, summary_font, title_area_width)
+    y += 14
+    for line in summary_lines[:4]:
+        draw.text((title_area_x, y), line, fill="#343a40", font=summary_font)
+        y += summary_font.size + 4
 
-# --- Display News ---
-if not news_items:
-    st.warning("Не удалось найти новости по выбранным источникам.")
-else:
-    st.success(f"Найдено новостей: {len(news_items)}")
-    for n in news_items:
-        pictogram_img = create_pictogram(n["title"], n["desc"])
+    buffer = io.BytesIO()
+    base.save(buffer, format="PNG", optimize=True)
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-        with st.expander(f"Подробнее: {n['orig_title']}"):
-            st.write(f"**Источник:** {n['source']}")
-            st.write(f"**Время:** {n['time'].strftime('%Y-%m-%d %H:%M UTC')}")
-            st.markdown(f"**Ссылка:** [{n['link']}]({n['link']})")
-            if n["image"]:
-                st.image(n["image"], caption="Original Image")
-            st.markdown(f"--- \n **Оригинал описания:** \n {n['orig_desc']}")
-        st.divider()
+# ─── Presentation Helpers ──────────────────────────────────────────────────────
+def format_datetime(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+
+
+def humanize_delta(dt: datetime) -> str:
+    delta = datetime.now(timezone.utc) - dt
+    seconds = int(delta.total_seconds())
+    if seconds < 60:
+        return "только что"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} мин назад"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} ч назад"
+    days = hours // 24
+    return f"{days} дн назад"
+
+
+def filter_items(items: Iterable[NewsItem], query: str) -> List[NewsItem]:
+    if not query:
+        return list(items)
+    q = query.lower().strip()
+    result = []
+    for item in items:
+        haystacks = [item.title.lower(), item.description.lower(), item.source.lower()]
+        if any(q in hay for hay in haystacks):
+            result.append(item)
+    return result
+
+
+def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> List[dict]:
+    view_models = []
+    for item in items:
+        translated_title = translate_text(item.orig_title) if translate_enabled else item.orig_title
+        translated_desc = translate_text(item.orig_description) if translate_enabled else item.orig_description
+        accent = random.choice(ACCENT_COLORS)
+        pictogram = create_pictogram(translated_title or item.orig_title, translated_desc or translated_title, accent)
+        view_models.append(
+            {
+                "title_display": translated_title or item.orig_title,
+                "summary_display": translated_desc or item.orig_description,
+                "orig_title": item.orig_title,
+                "orig_desc": item.orig_description,
+                "link": item.link,
+                "image": item.image,
+                "source": item.source,
+                "time": format_datetime(item.published),
+                "relative_time": humanize_delta(item.published),
+                "pictogram": pictogram,
+                "accent": accent,
+            }
+        )
+    return view_models
+
+
+# ─── FastAPI App ───────────────────────────────────────────────────────────────
+app = FastAPI(title="News pictogram aggregator")
+
+templates = Environment(
+    loader=FileSystemLoader(str(pathlib.Path(__file__).parent / "templates")),
+    autoescape=select_autoescape(["html", "xml"]),
+)
+
+
+@app.get("/", response_class=HTMLResponse)
+def index(request: Request, q: str = "", translate: Optional[str] = None) -> HTMLResponse:
+    translate_values = request.query_params.getlist("translate")
+    translate_enabled = True if not translate_values else translate_values[-1] != "off"
+    items = NEWS_CACHE.get_items()
+    filtered = filter_items(items, q)
+    view_models = prepare_view_models(filtered, translate_enabled)
+    template = templates.get_template("index.html")
+    updated_ts = NEWS_CACHE.timestamp or time.time()
+    rendered = template.render(
+        request=request,
+        items=view_models,
+        query=q,
+        translate=translate_enabled,
+        total=len(items),
+        matches=len(filtered),
+        updated_at=datetime.fromtimestamp(updated_ts, tz=timezone.utc).strftime("%H:%M:%S UTC"),
+    )
+    return HTMLResponse(rendered)
+
+
+@app.get("/health", response_class=HTMLResponse)
+def healthcheck() -> HTMLResponse:
+    return HTMLResponse("ok")
+
+
+if __name__ == "__main__":  # pragma: no cover
+    import uvicorn
+
+    uvicorn.run("app:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), reload=False)

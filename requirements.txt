@@ -1,6 +1,8 @@
-streamlit
+fastapi
+uvicorn
+jinja2
 requests
 feedparser
 beautifulsoup4
-deep_translator
-
+deep-translator
+pillow
