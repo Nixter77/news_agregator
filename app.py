@@ -32,7 +32,7 @@ TARGET_LANG = "ru"
 RAW_TTL     = 15 * 60  # Cache raw RSS data for 15 minutes
 LOG_FILE    = "news_debug.log"
 CACHE_DIR   = pathlib.Path(".rss_cache"); CACHE_DIR.mkdir(exist_ok=True)
-FONT_DIR    = pathlib.Path("ForExemple/INFO_Agent/fonts")
+FONT_DIR    = pathlib.Path("fonts")
 FONT_BOLD_PATH = FONT_DIR / "Montserrat-Bold.woff"
 FONT_REGULAR_PATH = FONT_DIR / "Montserrat-Regular.woff"
 
