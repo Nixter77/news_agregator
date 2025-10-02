@@ -6,14 +6,16 @@
     <title>Новости — Конструктивистский агрегатор</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;800&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Shrikhand&display=swap" rel="stylesheet" />
     <style>
         :root {
-            --ink: #1b1b1b;
-            --paper: #f4f1de;
-            --brick: #d62828;
-            --accent: #003049;
-            --sand: #e8d5b5;
+            --ink: #2a1f14;
+            --paper: #fff7eb;
+            --sunset: #f8a978;
+            --olive: #6b8a6e;
+            --peach: #fdd9a6;
+            --rose: #e98973;
+            --shadow: rgba(214, 180, 140, 0.45);
         }
 
         * {
@@ -22,57 +24,79 @@
 
         body {
             margin: 0;
-            font-family: 'Montserrat', 'DejaVu Sans', sans-serif;
+            font-family: 'DM Sans', 'DejaVu Sans', sans-serif;
             background: var(--paper);
             color: var(--ink);
             min-height: 100vh;
+            position: relative;
         }
 
         body::before, body::after {
             content: "";
             position: fixed;
             inset: 0;
-            background: conic-gradient(from 90deg at 10% 10%, rgba(214,40,40,0.13) 0 25%, transparent 25% 100%),
-                        radial-gradient(circle at 85% 18%, rgba(0,48,73,0.08) 0 50%, transparent 52% 100%);
-            z-index: -2;
+            background: radial-gradient(120% 150% at -10% -20%, rgba(248, 169, 120, 0.3), transparent 62%),
+                        radial-gradient(100% 120% at 110% 10%, rgba(233, 137, 115, 0.28), transparent 65%),
+                        radial-gradient(60% 70% at 50% 120%, rgba(107, 138, 110, 0.22), transparent 70%);
+            z-index: -3;
+            pointer-events: none;
+        }
+
+        body::after {
+            filter: blur(60px);
+            opacity: 0.6;
         }
 
         main {
             max-width: 1180px;
             margin: 0 auto;
-            padding: 48px 24px 96px;
+            padding: 56px 24px 112px;
+            position: relative;
+        }
+
+        main::before {
+            content: "";
+            position: absolute;
+            inset: 24px 0 0;
+            background: linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(253, 217, 166, 0.35));
+            border-radius: 32px;
+            box-shadow: 0 32px 60px -48px rgba(0, 0, 0, 0.6);
+            z-index: -1;
         }
 
         header.hero {
             display: flex;
             flex-direction: column;
-            gap: 24px;
+            gap: 28px;
         }
 
         header.hero h1 {
             margin: 0;
-            text-transform: uppercase;
-            letter-spacing: 4px;
-            font-weight: 800;
+            font-family: 'Shrikhand', 'DM Sans', cursive;
+            letter-spacing: 2px;
             font-size: clamp(2.4rem, 5vw, 3.6rem);
-            color: var(--accent);
+            color: var(--olive);
             position: relative;
+            text-transform: lowercase;
         }
 
         header.hero h1::after {
             content: "";
             position: absolute;
-            left: 0;
-            bottom: -10px;
-            width: clamp(120px, 40vw, 280px);
-            height: 12px;
-            background: var(--brick);
+            left: 4px;
+            bottom: -14px;
+            width: clamp(160px, 42vw, 300px);
+            height: 14px;
+            border-radius: 999px;
+            background: linear-gradient(90deg, var(--sunset), var(--rose));
         }
 
         .tagline {
             max-width: 720px;
             font-size: 1.05rem;
-            line-height: 1.6;
+            line-height: 1.65;
+            color: rgba(42, 31, 20, 0.78);
+            letter-spacing: 0.4px;
         }
 
         form.controls {
@@ -81,49 +105,61 @@
             gap: 12px;
             flex-wrap: wrap;
             align-items: center;
-            background: rgba(255, 255, 255, 0.6);
-            padding: 16px 18px;
-            border: 2px solid var(--ink);
-            box-shadow: 16px 16px 0 rgba(0,0,0,0.1);
+            background: rgba(255, 255, 255, 0.82);
+            padding: 18px 22px;
+            border-radius: 20px;
+            border: 2px solid rgba(42, 31, 20, 0.16);
+            box-shadow: 0 24px 38px -28px rgba(42, 31, 20, 0.64);
         }
 
         form.controls input[type="text"] {
             font-family: inherit;
             border: none;
-            border-bottom: 2px solid var(--ink);
+            border-bottom: 2px solid rgba(42, 31, 20, 0.32);
             padding: 10px 12px;
             font-size: 1rem;
-            background: transparent;
+            background: rgba(253, 217, 166, 0.2);
             outline: none;
+            border-radius: 12px 12px 0 0;
+            transition: border-color 0.2s ease, background 0.2s ease;
+        }
+
+        form.controls input[type="text"]:focus {
+            border-bottom-color: var(--rose);
+            background: rgba(248, 169, 120, 0.25);
         }
 
         form.controls button {
-            background: var(--brick);
+            background: linear-gradient(135deg, var(--sunset), var(--rose));
             color: #fff;
             border: 0;
-            padding: 12px 18px;
-            font-weight: 700;
+            padding: 12px 22px;
+            font-weight: 600;
             text-transform: uppercase;
-            letter-spacing: 1px;
+            letter-spacing: 1.5px;
+            border-radius: 999px;
             cursor: pointer;
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            box-shadow: 0 16px 22px -18px rgba(233, 137, 115, 0.9);
+            transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
         }
 
         form.controls button:hover {
-            transform: translate(-2px, -2px);
-            box-shadow: 6px 6px 0 var(--accent);
+            transform: translateY(-2px);
+            box-shadow: 0 18px 28px -20px rgba(107, 138, 110, 0.9);
+            filter: saturate(1.1);
         }
 
         .toggle {
             display: inline-flex;
             align-items: center;
             gap: 10px;
-            font-size: 0.95rem;
+            font-size: 0.93rem;
             font-weight: 600;
+            color: rgba(42, 31, 20, 0.75);
         }
 
         .toggle input {
-            accent-color: var(--brick);
+            accent-color: var(--rose);
             width: 18px;
             height: 18px;
         }
@@ -133,19 +169,22 @@
             display: flex;
             flex-wrap: wrap;
             gap: 16px;
-            background: rgba(0,0,0,0.04);
-            padding: 14px 18px;
-            border-left: 6px solid var(--brick);
-            font-size: 0.95rem;
+            background: rgba(255, 255, 255, 0.78);
+            padding: 16px 22px;
+            border-radius: 16px;
+            border: 1px solid rgba(42, 31, 20, 0.1);
+            box-shadow: inset 0 0 0 1px rgba(248, 169, 120, 0.24);
+            font-size: 0.96rem;
         }
 
         .summary-bar strong {
             font-weight: 700;
+            color: var(--olive);
         }
 
         .cards {
             display: grid;
-            gap: 28px;
+            gap: 30px;
         }
 
         article.card {
@@ -153,50 +192,53 @@
             display: grid;
             grid-template-columns: 1fr;
             gap: 22px;
-            padding: 26px;
-            background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(232,213,181,0.8));
-            border: 3px solid var(--ink);
-            box-shadow: 16px 16px 0 rgba(0,0,0,0.12);
+            padding: 28px;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(253, 217, 166, 0.55));
+            border: 2px solid rgba(42, 31, 20, 0.18);
+            border-radius: 22px;
+            box-shadow: 0 26px 46px -36px rgba(42, 31, 20, 0.9);
             overflow: hidden;
         }
 
         article.card::before {
             content: "";
             position: absolute;
-            top: -30px;
-            right: -30px;
-            width: 180px;
-            height: 180px;
-            background: var(--accent, #003049);
-            transform: rotate(45deg);
-            opacity: 0.12;
+            top: -40px;
+            right: -36px;
+            width: 220px;
+            height: 220px;
+            background: radial-gradient(circle at center, rgba(248, 169, 120, 0.4), transparent 70%);
+            transform: rotate(25deg);
+            opacity: 0.6;
         }
 
         .card-header {
             display: flex;
             justify-content: space-between;
             align-items: baseline;
-            font-size: 0.85rem;
+            font-size: 0.83rem;
             text-transform: uppercase;
-            letter-spacing: 1px;
+            letter-spacing: 2.4px;
             margin-bottom: 18px;
-            color: var(--accent);
+            color: var(--olive);
             font-weight: 700;
             grid-column: 1 / -1;
         }
 
         .pictogram-wrapper {
             position: relative;
-            background: linear-gradient(135deg, var(--accent, #003049), var(--brick));
+            background: linear-gradient(135deg, var(--accent, var(--olive)), var(--rose));
             padding: 12px;
-            border: 2px solid var(--ink);
-            box-shadow: 10px 10px 0 rgba(0,0,0,0.15);
+            border-radius: 16px;
+            border: 2px solid rgba(42, 31, 20, 0.15);
+            box-shadow: 0 18px 28px -24px rgba(233, 137, 115, 0.9);
         }
 
         .pictogram-wrapper img {
             display: block;
             width: 100%;
             height: auto;
+            border-radius: 10px;
         }
 
         .card-body {
@@ -207,9 +249,11 @@
 
         .card-body h2 {
             margin: 0;
-            font-size: 1.6rem;
-            text-transform: uppercase;
-            line-height: 1.2;
+            font-size: 1.55rem;
+            font-family: 'Shrikhand', 'DM Sans', cursive;
+            text-transform: none;
+            line-height: 1.25;
+            color: var(--accent, var(--rose));
         }
 
         .card-body .translated {
@@ -221,24 +265,26 @@
             margin-top: 0;
             font-size: 0.95rem;
             line-height: 1.5;
-            color: rgba(0,0,0,0.72);
+            color: rgba(42, 31, 20, 0.7);
         }
 
         .card-body .description {
             margin-top: 0;
             font-size: 1rem;
-            line-height: 1.6;
+            line-height: 1.65;
         }
 
         .original-label {
             display: inline-flex;
             align-items: center;
             gap: 6px;
-            background: rgba(0,0,0,0.07);
+            background: rgba(248, 169, 120, 0.18);
             padding: 4px 10px;
-            border-radius: 999px;
+            border-radius: 12px;
             font-size: 0.75rem;
-            letter-spacing: 1px;
+            letter-spacing: 1.6px;
+            text-transform: uppercase;
+            color: rgba(42, 31, 20, 0.7);
         }
 
         .card-footer {
@@ -251,90 +297,96 @@
 
         .card-footer a {
             text-decoration: none;
-            border: 2px solid var(--accent);
-            color: var(--accent);
-            padding: 10px 16px;
+            border: 1px solid var(--accent, var(--rose));
+            color: var(--accent, var(--rose));
+            padding: 10px 18px;
+            border-radius: 999px;
             text-transform: uppercase;
-            font-weight: 700;
-            letter-spacing: 1px;
-            transition: background 0.2s ease, color 0.2s ease;
+            font-weight: 600;
+            letter-spacing: 1.2px;
+            background: rgba(233, 137, 115, 0.1);
+            transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
         }
 
         .card-footer a:hover {
-            background: var(--accent);
+            background: linear-gradient(135deg, var(--sunset), var(--rose));
             color: #fff;
+            box-shadow: 0 16px 26px -20px rgba(41, 31, 20, 0.6);
         }
 
         .card-footer .timestamp {
             font-size: 0.85rem;
             font-weight: 600;
-            color: rgba(0,0,0,0.7);
+            color: rgba(42, 31, 20, 0.65);
         }
 
         .no-results {
             padding: 60px 24px;
             text-align: center;
-            border: 3px dashed rgba(0,0,0,0.2);
-            background: rgba(255,255,255,0.66);
-            font-size: 1.1rem;
+            border: 2px dashed rgba(42, 31, 20, 0.2);
+            border-radius: 20px;
+            background: rgba(253, 217, 166, 0.35);
+            font-size: 1.08rem;
+            letter-spacing: 0.5px;
         }
 
         footer.note {
             margin-top: 64px;
-            padding: 18px;
-            border-top: 2px solid rgba(0,0,0,0.2);
+            padding: 22px 18px;
+            border-top: 2px dashed rgba(42, 31, 20, 0.2);
             font-size: 0.9rem;
-            color: rgba(0,0,0,0.68);
+            color: rgba(42, 31, 20, 0.6);
+            letter-spacing: 0.6px;
         }
 
         @media (min-width: 768px) {
             main {
-                padding: 56px 28px 96px;
+                padding: 64px 32px 120px;
             }
 
             form.controls {
-                grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr) auto;
+                grid-template-columns: minmax(0, 1.3fr) minmax(0, 0.8fr) auto;
+                gap: 18px;
             }
 
             .summary-bar {
-                padding: 16px 20px;
+                padding: 18px 26px;
             }
         }
 
         @media (min-width: 992px) {
             main {
                 max-width: 1200px;
-                padding: 72px 36px 120px;
+                padding: 80px 40px 140px;
             }
 
             header.hero {
                 flex-direction: row;
                 align-items: flex-end;
-                gap: 40px;
+                gap: 48px;
             }
 
             header.hero h1 {
-                font-size: clamp(3.2rem, 3.8vw, 4.2rem);
-                letter-spacing: 6px;
+                font-size: clamp(3.1rem, 4vw, 4.1rem);
+                letter-spacing: 3px;
             }
 
             .tagline {
                 max-width: 420px;
-                font-size: 1.1rem;
+                font-size: 1.08rem;
             }
 
             form.controls {
-                grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.9fr) auto;
-                gap: 18px;
-                padding: 20px 24px;
+                grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.9fr) auto;
+                padding: 22px 28px;
             }
 
             form.controls button {
-                padding: 14px 24px;
+                padding: 14px 28px;
             }
 
             .summary-bar {
-                gap: 20px;
+                gap: 22px;
                 font-size: 1rem;
             }
 
@@ -342,7 +394,7 @@
                 grid-template-columns: minmax(320px, 0.9fr) minmax(360px, 1.1fr);
                 gap: 32px;
                 padding: 34px 36px;
-                box-shadow: 20px 20px 0 rgba(0,0,0,0.12);
+                border-radius: 28px;
             }
 
             .pictogram-wrapper {
@@ -353,7 +405,7 @@
             }
 
             .card-body h2 {
-                font-size: 1.8rem;
+                font-size: 1.9rem;
             }
 
             .card-footer {
@@ -361,7 +413,7 @@
             }
 
             .card-footer a {
-                padding: 12px 20px;
+                padding: 12px 22px;
             }
         }
 
@@ -375,18 +427,18 @@
             }
 
             article.card {
-                grid-template-columns: minmax(360px, 0.85fr) minmax(420px, 1.15fr);
+                grid-template-columns: minmax(360px, 0.88fr) minmax(420px, 1.12fr);
                 padding: 38px;
             }
 
             .card-header {
-                font-size: 0.95rem;
+                font-size: 0.92rem;
             }
         }
 
         @media (max-width: 720px) {
             main {
-                padding: 36px 16px 72px;
+                padding: 44px 18px 82px;
             }
 
             .summary-bar {
@@ -397,7 +449,8 @@
 
             form.controls {
                 grid-template-columns: 1fr;
-                box-shadow: 12px 12px 0 rgba(0,0,0,0.1);
+                padding: 18px;
+                box-shadow: 0 16px 35px -32px rgba(42, 31, 20, 0.8);
             }
 
             form.controls button {
@@ -416,16 +469,16 @@
         @media (max-width: 420px) {
             body::before,
             body::after {
-                opacity: 0.08;
+                opacity: 0.1;
             }
 
             main {
-                padding: 28px 14px 64px;
+                padding: 32px 14px 64px;
             }
 
             header.hero h1 {
-                letter-spacing: 2px;
-                font-size: clamp(2.2rem, 8vw, 2.6rem);
+                letter-spacing: 1.6px;
+                font-size: clamp(2.25rem, 9vw, 2.7rem);
             }
 
             .tagline {
@@ -434,8 +487,8 @@
             }
 
             form.controls {
-                padding: 14px 16px;
-                gap: 10px;
+                padding: 16px 16px;
+                gap: 12px;
             }
 
             form.controls input[type="text"] {
@@ -451,13 +504,13 @@
             }
 
             article.card {
-                padding: 22px 18px;
+                padding: 24px 18px;
                 gap: 18px;
-                box-shadow: 12px 12px 0 rgba(0,0,0,0.1);
+                box-shadow: 0 18px 30px -32px rgba(42, 31, 20, 0.85);
             }
 
             .card-body h2 {
-                font-size: 1.45rem;
+                font-size: 1.55rem;
             }
 
             .card-body .description {
