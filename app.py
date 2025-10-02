@@ -339,7 +339,21 @@ def index(request: Request, q: str = "", translate: Optional[str] = None) -> HTM
     translate_values = request.query_params.getlist("translate")
     translate_enabled = True if not translate_values else translate_values[-1] != "off"
     items = NEWS_CACHE.get_items()
-    filtered = filter_items(items, q)
+    # If query contains Cyrillic characters, translate it to English for searching
+    search_q = q or ""
+    translated_query: Optional[str] = None
+    if q:
+        # detect Cyrillic letters (basic heuristic)
+        if re.search(r"[\u0400-\u04FF]", q):
+            try:
+                # translate user's Russian query to English for better matching against English source text
+                translated_query = GoogleTranslator(source="auto", target="en").translate(q)
+                search_q = translated_query or search_q
+            except Exception:
+                # if translation fails, fall back to original query
+                translated_query = None
+
+    filtered = filter_items(items, search_q)
     view_models = prepare_view_models(filtered, translate_enabled)
     template = templates.get_template("index.html")
     updated_ts = NEWS_CACHE.timestamp or time.time()
@@ -347,6 +361,7 @@ def index(request: Request, q: str = "", translate: Optional[str] = None) -> HTM
         request=request,
         items=view_models,
         query=q,
+        translated_query=translated_query,
         translate=translate_enabled,
         total=len(items),
         matches=len(filtered),

@@ -552,6 +552,10 @@
             <button type="submit">Искать</button>
         </form>
 
+        {% if translated_query and translated_query != query %}
+        <div style="margin-top:8px; font-size:0.95rem; color:#5a4a3a;">Поиск выполняется по переводу: «{{ translated_query }}»</div>
+        {% endif %}
+
         <div class="summary-bar">
             <span><strong>{{ matches }}</strong> материалов отобрано из <strong>{{ total }}</strong> загруженных.</span>
             {% if query %}
