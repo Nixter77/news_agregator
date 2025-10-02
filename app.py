@@ -9,6 +9,7 @@ import pathlib
 import random
 import re
 import time
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -19,7 +20,7 @@ import requests
 from bs4 import BeautifulSoup
 from deep_translator import GoogleTranslator
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from PIL import Image, ImageDraw, ImageFont
 from requests.adapters import HTTPAdapter
@@ -372,9 +373,37 @@ templates = Environment(
 
 
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request, q: str = "", translate: Optional[str] = None) -> HTMLResponse:
+def index(
+    request: Request,
+    q: str = "",
+    translate: Optional[str] = None,
+    view_all: Optional[str] = None,
+    action: Optional[str] = None,
+    refreshed: Optional[str] = None,
+) -> HTMLResponse:
+    action = request.query_params.get("action") or action
+    if action == "refresh":
+        NEWS_CACHE.refresh()
+        params = [
+            (key, value)
+            for key, value in request.query_params.multi_items()
+            if key not in {"action", "refreshed"}
+        ]
+        params.append(("refreshed", "1"))
+        query = urllib.parse.urlencode(params, doseq=True)
+        target = request.url.path
+        if query:
+            target = f"{target}?{query}"
+        return RedirectResponse(target, status_code=303)
+
+    forced_refresh = (request.query_params.get("refreshed") or refreshed or "").lower() == "1"
+
     translate_values = request.query_params.getlist("translate")
     translate_enabled = True if not translate_values else translate_values[-1] != "off"
+
+    view_all_values = request.query_params.getlist("view_all")
+    view_all_enabled = any(val.lower() not in {"", "0", "off", "false"} for val in view_all_values)
+
     items = NEWS_CACHE.get_items()
     # If query contains Cyrillic characters, translate it to English for searching
     search_q = q or ""
@@ -392,6 +421,19 @@ def index(request: Request, q: str = "", translate: Optional[str] = None) -> HTM
 
     filtered = filter_items(items, search_q)
     view_models = prepare_view_models(filtered, translate_enabled)
+
+    all_news = None
+    if view_all_enabled:
+        all_news = [
+            {
+                "title": item.orig_title,
+                "link": item.link,
+                "source": item.source,
+                "time": format_datetime(item.published),
+                "relative_time": humanize_delta(item.published),
+            }
+            for item in items
+        ]
     template = templates.get_template("index.html")
     updated_ts = NEWS_CACHE.timestamp or time.time()
     rendered = template.render(
@@ -403,6 +445,9 @@ def index(request: Request, q: str = "", translate: Optional[str] = None) -> HTM
         total=len(items),
         matches=len(filtered),
         updated_at=datetime.fromtimestamp(updated_ts, tz=timezone.utc).strftime("%H:%M:%S UTC"),
+        forced_refresh=forced_refresh,
+        view_all=view_all_enabled,
+        all_news=all_news,
     )
     return HTMLResponse(rendered)
 
