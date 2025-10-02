@@ -229,12 +229,44 @@ def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[s
     return lines
 
 
-def create_pictogram(title: str, summary: str, accent: str) -> str:
+def create_pictogram(title: str, summary: str, accent: str, image_url: Optional[str] = None) -> str:
+    """Create a pictogram image and optionally embed the original image (image_url) into the left accent panel.
+    Returns base64-encoded PNG bytes as string.
+    """
     width, height = 720, 360
     base = Image.new("RGB", (width, height), "#f4f1de")
     draw = ImageDraw.Draw(base)
 
-    draw.rectangle([(0, 0), (width * 0.28, height)], fill=accent)
+    left_w = int(width * 0.28)
+    draw.rectangle([(0, 0), (left_w, height)], fill=accent)
+
+    # If there's an original image URL, try to fetch and paste it into the left panel
+    if image_url:
+        try:
+            resp = SESSION.get(image_url, timeout=10)
+            resp.raise_for_status()
+            img_orig = Image.open(io.BytesIO(resp.content)).convert("RGB")
+
+            # compute target area inside left panel with padding
+            padding = 12
+            target_w = left_w - padding * 2
+            target_h = height - padding * 2
+
+            ow, oh = img_orig.size
+            ratio = min(target_w / ow, target_h / oh)
+            new_size = (max(1, int(ow * ratio)), max(1, int(oh * ratio)))
+            img_thumb = img_orig.resize(new_size, Image.LANCZOS)
+
+            paste_x = padding + (target_w - new_size[0]) // 2
+            paste_y = padding + (target_h - new_size[1]) // 2
+
+            # create a rounded background for better contrast
+            bg = Image.new("RGB", (target_w, target_h), accent)
+            base.paste(bg, (padding, padding))
+            base.paste(img_thumb, (paste_x, paste_y))
+        except Exception:
+            # if any error occurs while fetching/processing image, ignore and continue
+            pass
     draw.polygon(
         [
             (width * 0.32, 0),
@@ -306,7 +338,12 @@ def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> L
         translated_title = translate_text(item.orig_title) if translate_enabled else item.orig_title
         translated_desc = translate_text(item.orig_description) if translate_enabled else item.orig_description
         accent = random.choice(ACCENT_COLORS)
-        pictogram = create_pictogram(translated_title or item.orig_title, translated_desc or translated_title, accent)
+        pictogram = create_pictogram(
+            translated_title or item.orig_title,
+            translated_desc or translated_title,
+            accent,
+            item.image,
+        )
         view_models.append(
             {
                 "title_display": translated_title or item.orig_title,
