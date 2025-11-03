@@ -55,6 +55,7 @@ ACCENT_COLORS = [
 ]
 
 TOKEN_PATTERN = re.compile(r"[\w\-]+", re.UNICODE)
+CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
 
 # ─── HTTP Session ─────────────────────────────────────────────────────────────
 def _build_session() -> requests.Session:
@@ -81,6 +82,49 @@ def tokenize(text: str) -> List[str]:
     if not text:
         return []
     return [token for token in TOKEN_PATTERN.findall(text.lower()) if token]
+
+
+def expand_query_variants(query: str) -> Tuple[List[str], Optional[str]]:
+    """Return distinct query variants across key languages for searching.
+
+    The first element is a list of unique strings to evaluate against the cache.
+    The second element is the first translated form that differs from the
+    original query so the UI can display a hint to the user.
+    """
+
+    variants: List[str] = []
+    seen: set[str] = set()
+    translation_note: Optional[str] = None
+
+    def add(candidate: str, mark_for_note: bool = False) -> None:
+        nonlocal translation_note
+        candidate = (candidate or "").strip()
+        if not candidate:
+            return
+        lowered = candidate.lower()
+        if lowered in seen:
+            return
+        variants.append(candidate)
+        seen.add(lowered)
+        if mark_for_note and translation_note is None and lowered != query.lower():
+            translation_note = candidate
+
+    add(query)
+
+    has_cyrillic = bool(CYRILLIC_RE.search(query))
+    languages: List[str] = ["en"]
+    target_lang = TARGET_LANG.lower()
+    if target_lang not in languages:
+        languages.append(target_lang)
+    if "ru" not in languages and (has_cyrillic or target_lang != "ru"):
+        languages.append("ru")
+
+    for lang in languages:
+        translated = translate_text(query, lang)
+        if translated:
+            add(translated, mark_for_note=True)
+
+    return variants, translation_note
 
 
 @lru_cache(maxsize=8)
@@ -185,8 +229,9 @@ class NewsItem:
 
         # Also store English translations for non-English sources to support Latin queries.
         if TARGET_LANG.lower() != "en":
-            tokens.update(tokenize(translate_text(self.orig_title, "en")))
-            tokens.update(tokenize(translate_text(self.orig_description, "en")))
+            en_title, en_desc = self.translated("en")
+            tokens.update(tokenize(en_title))
+            tokens.update(tokenize(en_desc))
 
         self.search_tokens = tokens
 
@@ -472,26 +517,10 @@ def index(
     view_all_enabled = any(val.lower() not in {"", "0", "off", "false"} for val in view_all_values)
 
     items = NEWS_CACHE.get_items()
-    # If query contains Cyrillic characters, translate it to English for searching
-    search_q = q or ""
+    query_candidates: List[str] = []
     translated_query: Optional[str] = None
     if q:
-        # detect Cyrillic letters (basic heuristic)
-        if re.search(r"[\u0400-\u04FF]", q):
-            try:
-                # translate user's Russian query to English for better matching against English source text
-                translated_query = GoogleTranslator(source="auto", target="en").translate(q)
-                search_q = translated_query or search_q
-            except Exception:
-                # if translation fails, fall back to original query
-                translated_query = None
-
-    query_candidates = []
-    seen_queries = set()
-    for candidate in (search_q, q):
-        if candidate and candidate not in seen_queries:
-            query_candidates.append(candidate)
-            seen_queries.add(candidate)
+        query_candidates, translated_query = expand_query_variants(q)
 
     if query_candidates:
         seen_links: set[str] = set()
