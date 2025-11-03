@@ -6,14 +6,13 @@ import hashlib
 import io
 import os
 import pathlib
-import random
 import re
 import time
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import feedparser
 import requests
@@ -55,6 +54,8 @@ ACCENT_COLORS = [
     "#0a2463",
 ]
 
+TOKEN_PATTERN = re.compile(r"[\w\-]+", re.UNICODE)
+
 # ─── HTTP Session ─────────────────────────────────────────────────────────────
 def _build_session() -> requests.Session:
     session = requests.Session()
@@ -75,13 +76,26 @@ def _build_session() -> requests.Session:
 
 SESSION = _build_session()
 
+
+def tokenize(text: str) -> List[str]:
+    if not text:
+        return []
+    return [token for token in TOKEN_PATTERN.findall(text.lower()) if token]
+
+
+@lru_cache(maxsize=8)
+def _get_translator(target_lang: str) -> GoogleTranslator:
+    return GoogleTranslator(source="auto", target=target_lang)
+
+
 # ─── Utility Helpers ───────────────────────────────────────────────────────────
 @lru_cache(maxsize=512)
 def translate_text(text: str, target_lang: str = TARGET_LANG) -> str:
     if not text:
         return ""
     try:
-        return GoogleTranslator(source="auto", target=target_lang).translate(text[:4500])
+        translator = _get_translator(target_lang)
+        return translator.translate(text[:4500])
     except Exception:
         # If translation fails, return original text.
         return text
@@ -132,6 +146,11 @@ def load_raw_rss(url: str) -> Optional[bytes]:
         return None
 
 
+def _select_accent(seed: str) -> str:
+    digest = hashlib.sha1(seed.encode("utf-8", "ignore")).digest()
+    return ACCENT_COLORS[digest[0] % len(ACCENT_COLORS)]
+
+
 @dataclass
 class NewsItem:
     title: str
@@ -142,6 +161,35 @@ class NewsItem:
     image: Optional[str]
     orig_title: str
     orig_description: str
+    accent: str
+    search_tokens: set[str] = field(default_factory=set, init=False, repr=False)
+    _pictograms: Dict[Tuple[str, str], str] = field(default_factory=dict, init=False, repr=False)
+    _translations: Dict[str, Tuple[str, str]] = field(default_factory=dict, init=False, repr=False)
+
+    def update_search_tokens(self) -> None:
+        tokens: set[str] = set()
+        for value in (
+            self.title,
+            self.description,
+            self.orig_title,
+            self.orig_description,
+            self.source,
+        ):
+            tokens.update(tokenize(value))
+        self.search_tokens = tokens
+
+    def translated(self, target_lang: str = TARGET_LANG) -> Tuple[str, str]:
+        if target_lang not in self._translations:
+            translated_title = translate_text(self.orig_title, target_lang)
+            translated_desc = translate_text(self.orig_description, target_lang)
+            self._translations[target_lang] = (translated_title, translated_desc)
+        return self._translations[target_lang]
+
+    def pictogram(self, title_text: str, summary_text: str) -> str:
+        key = (title_text, summary_text)
+        if key not in self._pictograms:
+            self._pictograms[key] = create_pictogram(title_text, summary_text, self.accent, self.image)
+        return self._pictograms[key]
 
 
 class NewsCache:
@@ -174,18 +222,19 @@ class NewsCache:
                         time.mktime(entry.published_parsed), tz=timezone.utc
                     )
 
-                aggregated.append(
-                    NewsItem(
-                        title=original_title,
-                        description=original_description,
-                        link=link,
-                        source=source,
-                        published=published,
-                        image=first_image(entry),
-                        orig_title=original_title,
-                        orig_description=original_description,
-                    )
+                item = NewsItem(
+                    title=original_title,
+                    description=original_description,
+                    link=link,
+                    source=source,
+                    published=published,
+                    image=first_image(entry),
+                    orig_title=original_title,
+                    orig_description=original_description,
+                    accent=_select_accent(link or source),
                 )
+                item.update_search_tokens()
+                aggregated.append(item)
         aggregated.sort(key=lambda x: x.published, reverse=True)
         self.items = aggregated
         self.timestamp = time.time()
@@ -231,6 +280,13 @@ def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[s
 
 
 def create_pictogram(title: str, summary: str, accent: str, image_url: Optional[str] = None) -> str:
+    key = (title, summary, accent, image_url or "")
+    return _create_pictogram_cached(key)
+
+
+@lru_cache(maxsize=128)
+def _create_pictogram_cached(key: Tuple[str, str, str, str]) -> str:
+    title, summary, accent, image_url = key
     """Create a pictogram image and optionally embed the original image (image_url) into the left accent panel.
     Returns base64-encoded PNG bytes as string.
     """
@@ -322,13 +378,13 @@ def humanize_delta(dt: datetime) -> str:
 
 
 def filter_items(items: Iterable[NewsItem], query: str) -> List[NewsItem]:
-    if not query:
+    tokens = tokenize(query)
+    if not tokens:
         return list(items)
-    q = query.lower().strip()
+    required = set(tokens)
     result = []
     for item in items:
-        haystacks = [item.title.lower(), item.description.lower(), item.source.lower()]
-        if any(q in hay for hay in haystacks):
+        if required.issubset(item.search_tokens):
             result.append(item)
     return result
 
@@ -336,19 +392,18 @@ def filter_items(items: Iterable[NewsItem], query: str) -> List[NewsItem]:
 def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> List[dict]:
     view_models = []
     for item in items:
-        translated_title = translate_text(item.orig_title) if translate_enabled else item.orig_title
-        translated_desc = translate_text(item.orig_description) if translate_enabled else item.orig_description
-        accent = random.choice(ACCENT_COLORS)
-        pictogram = create_pictogram(
-            translated_title or item.orig_title,
-            translated_desc or translated_title,
-            accent,
-            item.image,
-        )
+        if translate_enabled:
+            translated_title, translated_desc = item.translated()
+        else:
+            translated_title, translated_desc = item.orig_title, item.orig_description
+
+        title_display = translated_title or item.orig_title
+        summary_display = translated_desc or item.orig_description or title_display
+        pictogram = item.pictogram(title_display, summary_display)
         view_models.append(
             {
-                "title_display": translated_title or item.orig_title,
-                "summary_display": translated_desc or item.orig_description,
+                "title_display": title_display,
+                "summary_display": summary_display,
                 "orig_title": item.orig_title,
                 "orig_desc": item.orig_description,
                 "link": item.link,
@@ -357,7 +412,7 @@ def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> L
                 "time": format_datetime(item.published),
                 "relative_time": humanize_delta(item.published),
                 "pictogram": pictogram,
-                "accent": accent,
+                "accent": item.accent,
             }
         )
     return view_models

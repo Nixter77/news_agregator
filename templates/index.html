@@ -10,12 +10,19 @@
     <style>
         :root {
             --ink: #2a1f14;
-            --paper: #fff7eb;
+            --ink-soft: rgba(42, 31, 20, 0.72);
+            --ink-faded: rgba(42, 31, 20, 0.58);
+            --paper: #fef7ef;
+            --veil: rgba(255, 255, 255, 0.82);
+            --glass: rgba(255, 255, 255, 0.7);
             --sunset: #f8a978;
-            --olive: #6b8a6e;
-            --peach: #fdd9a6;
             --rose: #e98973;
-            --shadow: rgba(214, 180, 140, 0.45);
+            --olive: #5c7d63;
+            --accent-muted: rgba(233, 137, 115, 0.28);
+            --border-soft: rgba(42, 31, 20, 0.12);
+            --shadow-soft: 0 32px 60px -36px rgba(42, 31, 20, 0.55);
+            --radius-lg: 24px;
+            --radius-xl: 32px;
         }
 
         * {
@@ -25,291 +32,403 @@
         body {
             margin: 0;
             font-family: 'DM Sans', 'DejaVu Sans', sans-serif;
-            background: var(--paper);
+            background: radial-gradient(120% 120% at 12% -10%, rgba(248, 169, 120, 0.25), transparent 60%),
+                        radial-gradient(150% 130% at 88% -20%, rgba(233, 137, 115, 0.2), transparent 65%),
+                        linear-gradient(180deg, #fff9f0 0%, #f6e7d6 48%, #f2decc 100%);
             color: var(--ink);
             min-height: 100vh;
-            position: relative;
-        }
-
-        body::before, body::after {
-            content: "";
-            position: fixed;
-            inset: 0;
-            background: radial-gradient(120% 150% at -10% -20%, rgba(248, 169, 120, 0.3), transparent 62%),
-                        radial-gradient(100% 120% at 110% 10%, rgba(233, 137, 115, 0.28), transparent 65%),
-                        radial-gradient(60% 70% at 50% 120%, rgba(107, 138, 110, 0.22), transparent 70%);
-            z-index: -3;
-            pointer-events: none;
-        }
-
-        body::after {
-            filter: blur(60px);
-            opacity: 0.6;
         }
 
         main {
-            max-width: 1180px;
+            max-width: 1240px;
             margin: 0 auto;
-            padding: 56px 24px 112px;
-            position: relative;
+            padding: 72px clamp(18px, 5vw, 42px) 120px;
         }
 
-        main::before {
-            content: "";
-            position: absolute;
-            inset: 24px 0 0;
-            background: linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(253, 217, 166, 0.35));
-            border-radius: 32px;
-            box-shadow: 0 32px 60px -48px rgba(0, 0, 0, 0.6);
-            z-index: -1;
+        .surface {
+            background: var(--veil);
+            border-radius: var(--radius-xl);
+            padding: clamp(32px, 5vw, 56px);
+            border: 1px solid rgba(255, 255, 255, 0.6);
+            box-shadow: var(--shadow-soft);
+            backdrop-filter: blur(24px);
         }
 
         header.hero {
-            display: flex;
-            flex-direction: column;
-            gap: 28px;
+            display: grid;
+            gap: 18px;
+            margin-bottom: 36px;
         }
 
         header.hero h1 {
             margin: 0;
-            font-family: 'DM Sans', 'DejaVu Sans', sans-serif;
+            font-size: clamp(2.6rem, 5vw, 3.8rem);
             letter-spacing: 2px;
-            font-size: clamp(2.4rem, 5vw, 3.6rem);
             color: var(--olive);
-            position: relative;
             text-transform: lowercase;
         }
 
-        header.hero h1::after {
+        header.hero h1 span {
+            display: inline-block;
+            position: relative;
+        }
+
+        header.hero h1 span::after {
             content: "";
             position: absolute;
-            left: 4px;
-            bottom: -14px;
-            width: clamp(160px, 42vw, 300px);
-            height: 14px;
+            left: 0;
+            bottom: -10px;
+            width: 68%;
+            height: 10px;
             border-radius: 999px;
             background: linear-gradient(90deg, var(--sunset), var(--rose));
         }
 
         .tagline {
-            max-width: 720px;
+            max-width: 760px;
             font-size: 1.05rem;
-            line-height: 1.65;
-            color: rgba(42, 31, 20, 0.78);
-            letter-spacing: 0.4px;
+            line-height: 1.7;
+            color: var(--ink-soft);
         }
 
         form.controls {
+            margin-top: 24px;
             display: grid;
-            grid-template-columns: minmax(0, 1fr) repeat(4, auto);
-            gap: 12px;
-            flex-wrap: wrap;
+            gap: 18px;
+            grid-template-areas:
+                "search"
+                "toggles"
+                "actions";
+            background: var(--glass);
+            border-radius: var(--radius-lg);
+            padding: clamp(20px, 4vw, 28px);
+            border: 1px solid rgba(42, 31, 20, 0.1);
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+        }
+
+        form.controls input[type="hidden"] {
+            display: none;
+        }
+
+        form.controls .search-field {
+            grid-area: search;
+            display: flex;
             align-items: center;
-            background: rgba(255, 255, 255, 0.82);
-            padding: 18px 22px;
-            border-radius: 20px;
-            border: 2px solid rgba(42, 31, 20, 0.16);
-            box-shadow: 0 24px 38px -28px rgba(42, 31, 20, 0.64);
+            gap: 12px;
+            padding: 12px 18px;
+            border-radius: 18px;
+            border: 1px solid rgba(42, 31, 20, 0.12);
+            background: rgba(255, 255, 255, 0.9);
+            box-shadow: inset 0 0 0 1px rgba(248, 169, 120, 0.18);
+        }
+
+        form.controls .search-field::before {
+            content: "⌕";
+            font-size: 1.1rem;
+            color: var(--olive);
         }
 
         form.controls input[type="text"] {
-            font-family: inherit;
+            flex: 1;
             border: none;
-            border-bottom: 2px solid rgba(42, 31, 20, 0.32);
-            padding: 10px 12px;
             font-size: 1rem;
-            background: rgba(253, 217, 166, 0.2);
+            background: transparent;
             outline: none;
-            border-radius: 12px 12px 0 0;
-            transition: border-color 0.2s ease, background 0.2s ease;
+            color: var(--ink);
         }
 
-        form.controls input[type="text"]:focus {
-            border-bottom-color: var(--rose);
-            background: rgba(248, 169, 120, 0.25);
+        form.controls input[type="text"]::placeholder {
+            color: rgba(42, 31, 20, 0.45);
+        }
+
+        form.controls .toggles {
+            grid-area: toggles;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        label.toggle {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 16px;
+            border-radius: 999px;
+            background: rgba(248, 169, 120, 0.14);
+            border: 1px solid rgba(233, 137, 115, 0.32);
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--ink-soft);
+        }
+
+        label.toggle input {
+            position: absolute;
+            opacity: 0;
+            inset: 0;
+            cursor: pointer;
+        }
+
+        .toggle__indicator {
+            width: 46px;
+            height: 24px;
+            border-radius: 999px;
+            background: rgba(42, 31, 20, 0.16);
+            position: relative;
+            transition: background 0.2s ease;
+        }
+
+        .toggle__indicator::after {
+            content: "";
+            position: absolute;
+            top: 3px;
+            left: 4px;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #fff;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+            transition: transform 0.2s ease;
+        }
+
+        label.toggle input:checked + .toggle__indicator {
+            background: linear-gradient(135deg, var(--sunset), var(--rose));
+        }
+
+        label.toggle input:checked + .toggle__indicator::after {
+            transform: translateX(20px);
+        }
+
+        .toggle__label {
+            pointer-events: none;
+        }
+
+        form.controls .control-actions {
+            grid-area: actions;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            justify-content: flex-start;
         }
 
         form.controls button {
+            border: none;
+            border-radius: 999px;
+            padding: 12px 26px;
+            font-weight: 700;
+            letter-spacing: 1.2px;
+            text-transform: uppercase;
+            cursor: pointer;
             background: linear-gradient(135deg, var(--sunset), var(--rose));
             color: #fff;
-            border: 0;
-            padding: 12px 22px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1.5px;
-            border-radius: 999px;
-            cursor: pointer;
-            box-shadow: 0 16px 22px -18px rgba(233, 137, 115, 0.9);
+            box-shadow: 0 18px 30px -24px rgba(233, 137, 115, 0.9);
             transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
         }
 
         form.controls button:hover {
             transform: translateY(-2px);
-            box-shadow: 0 18px 28px -20px rgba(107, 138, 110, 0.9);
-            filter: saturate(1.1);
+            box-shadow: 0 22px 36px -22px rgba(233, 137, 115, 0.85);
+            filter: saturate(1.05);
         }
 
-        .refresh-button {
-            background: linear-gradient(135deg, #6b8a6e, #3d5d45);
-            box-shadow: 0 16px 22px -18px rgba(107, 138, 110, 0.6);
+        form.controls button.refresh-button {
+            background: linear-gradient(135deg, #5c7d63, #2f4d38);
+            box-shadow: 0 18px 30px -24px rgba(92, 125, 99, 0.75);
         }
 
-        .refresh-button:hover {
-            box-shadow: 0 18px 28px -20px rgba(42, 31, 20, 0.5);
+        form.controls button.refresh-button:hover {
+            box-shadow: 0 22px 36px -20px rgba(47, 77, 56, 0.7);
         }
 
-        .toggle {
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-            font-size: 0.93rem;
-            font-weight: 600;
-            color: rgba(42, 31, 20, 0.75);
+        form.controls button:focus-visible {
+            outline: 3px solid rgba(233, 137, 115, 0.45);
+            outline-offset: 2px;
         }
 
-        .toggle input {
-            accent-color: var(--rose);
-            width: 18px;
-            height: 18px;
+        .translation-note {
+            margin-top: 10px;
+            font-size: 0.95rem;
+            color: var(--ink-soft);
         }
 
         .summary-bar {
-            margin: 24px 0 32px;
+            margin: 32px 0 40px;
+            padding: 18px 22px;
+            border-radius: 18px;
+            background: rgba(255, 255, 255, 0.88);
+            border: 1px solid rgba(233, 137, 115, 0.22);
             display: flex;
             flex-wrap: wrap;
-            gap: 16px;
-            background: rgba(255, 255, 255, 0.78);
-            padding: 16px 22px;
-            border-radius: 16px;
-            border: 1px solid rgba(42, 31, 20, 0.1);
-            box-shadow: inset 0 0 0 1px rgba(248, 169, 120, 0.24);
-            font-size: 0.96rem;
+            gap: 12px;
+            align-items: center;
         }
 
-        .summary-bar strong {
-            font-weight: 700;
+        .stat-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 14px;
+            border-radius: 999px;
+            background: rgba(248, 169, 120, 0.18);
+            font-weight: 600;
+            color: var(--ink-soft);
+        }
+
+        .stat-chip strong {
             color: var(--olive);
         }
 
+        .summary-bar .timestamp {
+            margin-left: auto;
+            font-weight: 600;
+            color: var(--ink-faded);
+        }
+
+        .summary-bar a {
+            color: var(--rose);
+            font-weight: 600;
+            text-decoration: none;
+        }
+
+        .summary-bar a:hover {
+            text-decoration: underline;
+        }
+
         .flash {
-            margin: 18px 0 0;
+            margin: 16px 0 0;
             padding: 14px 18px;
             border-radius: 14px;
-            font-size: 0.95rem;
+            background: rgba(92, 125, 99, 0.16);
+            border: 1px solid rgba(92, 125, 99, 0.32);
             font-weight: 600;
-            background: rgba(107, 138, 110, 0.16);
-            border: 1px solid rgba(107, 138, 110, 0.35);
-            color: rgba(42, 31, 20, 0.75);
-            box-shadow: inset 0 0 0 1px rgba(42, 31, 20, 0.08);
+            color: var(--ink-soft);
         }
 
         .cards {
             display: grid;
-            gap: 30px;
+            gap: 28px;
         }
 
         article.card {
             position: relative;
             display: grid;
-            grid-template-columns: 1fr;
-            gap: 22px;
+            gap: 24px;
             padding: 28px;
-            background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(253, 217, 166, 0.55));
-            border: 2px solid rgba(42, 31, 20, 0.18);
-            border-radius: 22px;
-            box-shadow: 0 26px 46px -36px rgba(42, 31, 20, 0.9);
+            border-radius: 24px;
+            background: linear-gradient(140deg, rgba(255, 255, 255, 0.96), rgba(253, 217, 166, 0.42));
+            border: 1px solid rgba(42, 31, 20, 0.08);
+            box-shadow: 0 26px 48px -34px rgba(42, 31, 20, 0.68);
             overflow: hidden;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            z-index: 0;
         }
 
-        article.card::before {
+        article.card::after {
             content: "";
             position: absolute;
-            top: -40px;
-            right: -36px;
-            width: 220px;
+            inset: -120px 50% auto -60px;
             height: 220px;
-            background: radial-gradient(circle at center, rgba(248, 169, 120, 0.4), transparent 70%);
-            transform: rotate(25deg);
+            background: radial-gradient(circle at center, rgba(248, 169, 120, 0.35), transparent 65%);
+            transform: rotate(24deg);
             opacity: 0.6;
+            pointer-events: none;
+        }
+
+        article.card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 32px 54px -28px rgba(42, 31, 20, 0.7);
+        }
+
+        article.card > * {
+            position: relative;
+            z-index: 1;
         }
 
         .card-header {
             display: flex;
             justify-content: space-between;
             align-items: baseline;
-            font-size: 0.83rem;
+            font-size: 0.8rem;
+            letter-spacing: 2px;
             text-transform: uppercase;
-            letter-spacing: 2.4px;
-            margin-bottom: 18px;
             color: var(--olive);
+            z-index: 1;
+        }
+
+        .source-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            background: rgba(92, 125, 99, 0.12);
+            border: 1px solid rgba(92, 125, 99, 0.26);
             font-weight: 700;
-            grid-column: 1 / -1;
+        }
+
+        .card-header .published {
+            color: var(--ink-faded);
+            font-weight: 600;
         }
 
         .pictogram-wrapper {
-            position: relative;
-            background: linear-gradient(135deg, var(--accent, var(--olive)), var(--rose));
+            border-radius: 18px;
             padding: 12px;
-            border-radius: 16px;
-            border: 2px solid rgba(42, 31, 20, 0.15);
-            box-shadow: 0 18px 28px -24px rgba(233, 137, 115, 0.9);
+            background: linear-gradient(135deg, var(--accent, var(--olive)), rgba(233, 137, 115, 0.6));
+            border: 1px solid rgba(42, 31, 20, 0.12);
+            box-shadow: 0 20px 32px -26px rgba(233, 137, 115, 0.9);
         }
 
         .pictogram-wrapper img {
-            display: block;
             width: 100%;
-            height: auto;
-            border-radius: 10px;
+            display: block;
+            border-radius: 12px;
         }
 
         .card-body {
-            display: flex;
-            flex-direction: column;
+            display: grid;
             gap: 14px;
         }
 
         .card-body h2 {
             margin: 0;
-            font-size: 1.55rem;
-            font-family: 'DM Sans', 'DejaVu Sans', sans-serif;
-            text-transform: none;
+            font-size: 1.7rem;
             line-height: 1.25;
             color: var(--accent, var(--rose));
         }
 
-        .card-body .translated {
-            font-weight: 700;
-            color: var(--ink);
-        }
-
         .card-body .original {
-            margin-top: 0;
             font-size: 0.95rem;
-            line-height: 1.5;
-            color: rgba(42, 31, 20, 0.7);
+            color: var(--ink-soft);
+            line-height: 1.45;
         }
 
-        .card-body .description {
-            margin-top: 0;
-            font-size: 1rem;
-            line-height: 1.65;
+        .card-body .original > div {
+            margin-top: 6px;
         }
 
-        .original-label {
+        .card-body .original-label {
             display: inline-flex;
             align-items: center;
             gap: 6px;
-            background: rgba(248, 169, 120, 0.18);
             padding: 4px 10px;
-            border-radius: 12px;
-            font-size: 0.75rem;
-            letter-spacing: 1.6px;
+            border-radius: 999px;
+            background: rgba(248, 169, 120, 0.16);
             text-transform: uppercase;
-            color: rgba(42, 31, 20, 0.7);
+            letter-spacing: 1.6px;
+            font-size: 0.75rem;
+            color: var(--ink-faded);
+        }
+
+        .card-body .description {
+            margin: 0;
+            font-size: 1rem;
+            line-height: 1.65;
+            color: var(--ink);
         }
 
         .card-footer {
-            margin-top: auto;
+            margin-top: 8px;
             display: flex;
             flex-wrap: wrap;
             gap: 12px;
@@ -318,60 +437,52 @@
 
         .card-footer a {
             text-decoration: none;
-            border: 1px solid var(--accent, var(--rose));
-            color: var(--accent, var(--rose));
             padding: 10px 18px;
             border-radius: 999px;
-            text-transform: uppercase;
+            border: 1px solid var(--accent, var(--rose));
+            color: var(--accent, var(--rose));
             font-weight: 600;
-            letter-spacing: 1.2px;
-            background: rgba(233, 137, 115, 0.1);
+            text-transform: uppercase;
+            letter-spacing: 1px;
             transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+            background: rgba(233, 137, 115, 0.08);
         }
 
-        .card-footer a:hover {
+        .card-footer a:hover,
+        .card-footer a:focus-visible {
             background: linear-gradient(135deg, var(--sunset), var(--rose));
             color: #fff;
-            box-shadow: 0 16px 26px -20px rgba(41, 31, 20, 0.6);
+            box-shadow: 0 16px 28px -22px rgba(42, 31, 20, 0.6);
         }
 
         .card-footer .timestamp {
             font-size: 0.85rem;
             font-weight: 600;
-            color: rgba(42, 31, 20, 0.65);
+            color: var(--ink-faded);
         }
 
         .no-results {
+            margin-top: 36px;
             padding: 60px 24px;
-            text-align: center;
-            border: 2px dashed rgba(42, 31, 20, 0.2);
             border-radius: 20px;
+            border: 2px dashed rgba(42, 31, 20, 0.2);
             background: rgba(253, 217, 166, 0.35);
-            font-size: 1.08rem;
-            letter-spacing: 0.5px;
-        }
-
-        footer.note {
-            margin-top: 64px;
-            padding: 22px 18px;
-            border-top: 2px dashed rgba(42, 31, 20, 0.2);
-            font-size: 0.9rem;
-            color: rgba(42, 31, 20, 0.6);
-            letter-spacing: 0.6px;
+            font-size: 1.05rem;
+            color: var(--ink-soft);
         }
 
         .all-news {
-            margin-top: 48px;
-            padding: 24px 28px;
-            border-radius: 20px;
-            background: rgba(255, 255, 255, 0.85);
-            border: 2px solid rgba(42, 31, 20, 0.14);
-            box-shadow: 0 24px 46px -36px rgba(42, 31, 20, 0.65);
+            margin-top: 56px;
+            padding: 28px;
+            border-radius: 22px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid rgba(42, 31, 20, 0.1);
+            box-shadow: 0 24px 44px -34px rgba(42, 31, 20, 0.55);
         }
 
         .all-news h2 {
             margin: 0 0 18px;
-            font-size: 1.35rem;
+            font-size: 1.4rem;
             color: var(--olive);
             letter-spacing: 1px;
         }
@@ -381,23 +492,23 @@
             margin: 0;
             padding: 0;
             display: grid;
-            gap: 12px;
+            gap: 14px;
         }
 
         .all-news li {
             display: grid;
-            grid-template-columns: minmax(0, 1.2fr) minmax(0, 2fr) auto;
-            gap: 14px;
+            grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.8fr) auto;
+            gap: 16px;
             align-items: center;
-            padding: 12px 16px;
-            border-radius: 14px;
-            background: rgba(253, 217, 166, 0.2);
-            border: 1px solid rgba(42, 31, 20, 0.12);
+            padding: 14px 18px;
+            border-radius: 16px;
+            background: rgba(253, 217, 166, 0.22);
+            border: 1px solid rgba(42, 31, 20, 0.1);
         }
 
-        .all-news li span.source {
+        .all-news li .source {
             font-weight: 600;
-            color: rgba(42, 31, 20, 0.7);
+            color: var(--ink-soft);
         }
 
         .all-news li a {
@@ -406,320 +517,209 @@
             text-decoration: none;
         }
 
-        .all-news li a:hover {
+        .all-news li a:hover,
+        .all-news li a:focus-visible {
             text-decoration: underline;
         }
 
-        .all-news li span.time {
+        .all-news li .time {
             font-size: 0.85rem;
-            color: rgba(42, 31, 20, 0.6);
+            color: var(--ink-faded);
             justify-self: end;
         }
 
-        @media (min-width: 768px) {
-            main {
-                padding: 64px 32px 120px;
-            }
+        footer.note {
+            margin-top: 56px;
+            padding: 18px 0 0;
+            font-size: 0.9rem;
+            color: var(--ink-faded);
+            border-top: 1px dashed rgba(42, 31, 20, 0.2);
+        }
 
+        @media (min-width: 720px) {
             form.controls {
-                grid-template-columns: minmax(0, 1.3fr) repeat(4, auto);
-                gap: 18px;
+                grid-template-areas:
+                    "search search"
+                    "toggles actions";
+                grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+                align-items: center;
             }
 
-            .summary-bar {
-                padding: 18px 26px;
+            form.controls .control-actions {
+                justify-content: flex-end;
             }
         }
 
-        @media (min-width: 992px) {
-            main {
-                max-width: 1200px;
-                padding: 80px 40px 140px;
+        @media (min-width: 820px) {
+            .cards {
+                grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
             }
+        }
 
+        @media (min-width: 1024px) {
             header.hero {
-                flex-direction: row;
-                align-items: flex-end;
-                gap: 48px;
-            }
-
-            header.hero h1 {
-                font-size: clamp(3.1rem, 4vw, 4.1rem);
-                letter-spacing: 3px;
-            }
-
-            .tagline {
-                max-width: 420px;
-                font-size: 1.08rem;
+                grid-template-columns: 1.1fr 0.9fr;
+                align-items: end;
+                gap: 40px;
             }
 
             form.controls {
-                grid-template-columns: minmax(0, 1.4fr) repeat(4, auto);
-                padding: 22px 28px;
+                grid-template-areas: "search toggles actions";
+                grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.4fr) auto;
             }
 
-            form.controls button {
-                padding: 14px 28px;
-            }
-
-            .summary-bar {
-                gap: 22px;
-                font-size: 1rem;
+            .cards {
+                grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
             }
 
             article.card {
-                grid-template-columns: minmax(320px, 0.9fr) minmax(360px, 1.1fr);
-                gap: 32px;
-                padding: 34px 36px;
-                border-radius: 28px;
-            }
-
-            .pictogram-wrapper {
-                align-self: stretch;
-                display: flex;
-                align-items: center;
-                justify-content: center;
+                grid-template-columns: minmax(320px, 0.85fr) minmax(360px, 1.15fr);
             }
 
             .card-body h2 {
                 font-size: 1.9rem;
             }
-
-            .card-footer {
-                gap: 16px;
-            }
-
-            .card-footer a {
-                padding: 12px 22px;
-            }
         }
 
-        @media (min-width: 1280px) {
+        @media (max-width: 640px) {
             main {
-                max-width: 1320px;
+                padding: 56px 16px 96px;
             }
 
-            .cards {
-                gap: 36px;
+            .surface {
+                padding: 28px 20px 44px;
             }
 
-            article.card {
-                grid-template-columns: minmax(360px, 0.88fr) minmax(420px, 1.12fr);
-                padding: 38px;
-            }
-
-            .card-header {
-                font-size: 0.92rem;
-            }
-        }
-
-        @media (max-width: 720px) {
-            main {
-                padding: 44px 18px 82px;
-            }
-
-            .summary-bar {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 12px;
-            }
-
-            form.controls {
-                grid-template-columns: 1fr;
-                padding: 18px;
-                box-shadow: 0 16px 35px -32px rgba(42, 31, 20, 0.8);
+            form.controls .control-actions {
+                justify-content: stretch;
             }
 
             form.controls button {
-                width: 100%;
+                flex: 1 1 100%;
             }
 
-            .toggle {
-                align-items: center;
-            }
-
-            .card-footer a {
-                width: auto;
-            }
-
-            .all-news {
-                padding: 22px;
-            }
-
-            .all-news li {
-                grid-template-columns: 1fr;
-                gap: 6px;
-            }
-
-            .all-news li span.time {
-                justify-self: start;
-            }
-        }
-
-        @media (max-width: 420px) {
-            body::before,
-            body::after {
-                opacity: 0.1;
-            }
-
-            main {
-                padding: 32px 14px 64px;
-            }
-
-            header.hero h1 {
-                letter-spacing: 1.6px;
-                font-size: clamp(2.25rem, 9vw, 2.7rem);
-            }
-
-            .tagline {
-                font-size: 0.95rem;
-                line-height: 1.6;
-            }
-
-            form.controls {
-                padding: 16px 16px;
-                gap: 12px;
-            }
-
-            form.controls input[type="text"] {
-                font-size: 0.95rem;
-            }
-
-            .toggle {
-                align-items: flex-start;
-            }
-
-            .toggle span {
-                line-height: 1.4;
-            }
-
-            article.card {
-                padding: 24px 18px;
-                gap: 18px;
-                box-shadow: 0 18px 30px -32px rgba(42, 31, 20, 0.85);
-            }
-
-            .card-body h2 {
-                font-size: 1.55rem;
-            }
-
-            .card-body .description {
-                font-size: 0.95rem;
-            }
-
-            .card-footer {
-                gap: 10px;
-            }
-
-            .card-footer a {
-                width: 100%;
-                text-align: center;
-                letter-spacing: 0.8px;
-            }
-
+            .card-footer a,
             .card-footer .timestamp {
                 width: 100%;
                 text-align: center;
-                font-size: 0.82rem;
+            }
+
+            .all-news li {
+                grid-template-columns: minmax(0, 1fr);
+                gap: 10px;
+            }
+
+            .all-news li .time {
+                justify-self: start;
             }
         }
     </style>
 </head>
 <body>
     <main>
-        <header class="hero">
-            <h1>Новости в плакатах</h1>
-            <p class="tagline">Свежая картина мира из внешних источников, переведённая и превращённая в конструктивистские пиктограммы. Выберите тему, включите перевод и смотрите на события через форму и цвет.</p>
-        </header>
+        <div class="surface">
+            <header class="hero">
+                <h1><span>Новости в плакатах</span></h1>
+                <p class="tagline">Свежая картина мира из внешних источников, переведённая и превращённая в конструктивистские пиктограммы. Выберите тему, включите перевод и смотрите на события через форму и цвет.</p>
+            </header>
 
-        {% if forced_refresh %}
-        <div class="flash">Лента обновлена. Последнее обновление: {{ updated_at }}</div>
-        {% endif %}
-
-        <form class="controls" method="get">
-            <input type="text" name="q" value="{{ query }}" placeholder="Поиск по заголовкам, описаниям и источникам" />
-            <input type="hidden" name="translate" value="off" />
-            <input type="hidden" name="view_all" value="off" />
-            <input type="hidden" name="refreshed" value="" />
-            <label class="toggle">
-                <input type="checkbox" name="translate" value="on" {% if translate %}checked{% endif %} />
-                <span>Перевод на русский</span>
-            </label>
-            <label class="toggle">
-                <input type="checkbox" name="view_all" value="on" {% if view_all %}checked{% endif %} />
-                <span>Показать список всех новостей</span>
-            </label>
-            <button type="submit">Искать</button>
-            <button type="submit" name="action" value="refresh" class="refresh-button">Обновить ленту</button>
-        </form>
-
-        {% if translated_query and translated_query != query %}
-        <div style="margin-top:8px; font-size:0.95rem; color:#5a4a3a;">Поиск выполняется по переводу: «{{ translated_query }}»</div>
-        {% endif %}
-
-        <div class="summary-bar">
-            <span><strong>{{ matches }}</strong> материалов отобрано из <strong>{{ total }}</strong> загруженных.</span>
-            {% if query %}
-            <span>Запрос: «{{ query }}»</span>
-            <a href="/" style="margin-left:auto; text-transform:uppercase; font-weight:700;">Сбросить поиск</a>
+            {% if forced_refresh %}
+            <div class="flash">Лента обновлена. Последнее обновление: {{ updated_at }}</div>
             {% endif %}
-            <span>Последнее обновление: {{ updated_at }}</span>
-        </div>
 
-        {% if items %}
-        <section class="cards">
-            {% for item in items %}
-            <article class="card" style="--accent: {{ item.accent }};">
-                <div class="card-header">
-                    <span>{{ item.source }}</span>
-                    <span>{{ item.time }}</span>
+            <form class="controls" method="get">
+                <input type="hidden" name="translate" value="off" />
+                <input type="hidden" name="view_all" value="off" />
+                <input type="hidden" name="refreshed" value="" />
+                <div class="search-field">
+                    <input type="text" name="q" value="{{ query }}" placeholder="Поиск по заголовкам, описаниям и источникам" />
                 </div>
-                <div class="pictogram-wrapper">
-                    <img src="data:image/png;base64,{{ item.pictogram }}" alt="Плакат новости" loading="lazy" />
+                <div class="toggles">
+                    <label class="toggle">
+                        <input type="checkbox" name="translate" value="on" {% if translate %}checked{% endif %} />
+                        <span class="toggle__indicator"></span>
+                        <span class="toggle__label">Перевод на русский</span>
+                    </label>
+                    <label class="toggle">
+                        <input type="checkbox" name="view_all" value="on" {% if view_all %}checked{% endif %} />
+                        <span class="toggle__indicator"></span>
+                        <span class="toggle__label">Показать список всех новостей</span>
+                    </label>
                 </div>
-                <div class="card-body">
-                    <h2 class="translated">{{ item.title_display }}</h2>
-                    <div class="original">
-                        <span class="original-label">Оригинал</span>
-                        <div>{{ item.orig_title }}</div>
+                <div class="control-actions">
+                    <button type="submit">Искать</button>
+                    <button type="submit" name="action" value="refresh" class="refresh-button">Обновить ленту</button>
+                </div>
+            </form>
+
+            {% if translated_query and translated_query != query %}
+            <div class="translation-note">Поиск выполняется по переводу: «{{ translated_query }}»</div>
+            {% endif %}
+
+            <div class="summary-bar">
+                <span class="stat-chip"><strong>{{ matches }}</strong> материалов из {{ total }}</span>
+                {% if query %}
+                <span class="stat-chip">Запрос: «{{ query }}»</span>
+                <a href="/">Сбросить поиск</a>
+                {% endif %}
+                <span class="timestamp">Последнее обновление: {{ updated_at }}</span>
+            </div>
+
+            {% if items %}
+            <section class="cards">
+                {% for item in items %}
+                <article class="card" style="--accent: {{ item.accent }};">
+                    <div class="card-header">
+                        <span class="source-pill">{{ item.source }}</span>
+                        <span class="published">{{ item.time }}</span>
                     </div>
-                    <p class="description">{{ item.summary_display }}</p>
-                    {% if item.orig_desc %}
-                    <p class="original">{{ item.orig_desc }}</p>
-                    {% endif %}
-                    <div class="card-footer">
-                        <a href="{{ item.link }}" target="_blank" rel="noopener">Читать источник</a>
-                        {% if item.image %}
-                        <a href="{{ item.image }}" target="_blank" rel="noopener">Первичный визуал</a>
+                    <div class="pictogram-wrapper">
+                        <img src="data:image/png;base64,{{ item.pictogram }}" alt="Плакат новости" loading="lazy" />
+                    </div>
+                    <div class="card-body">
+                        <h2>{{ item.title_display }}</h2>
+                        <div class="original">
+                            <span class="original-label">Оригинал</span>
+                            <div>{{ item.orig_title }}</div>
+                        </div>
+                        <p class="description">{{ item.summary_display }}</p>
+                        {% if item.orig_desc %}
+                        <p class="original">{{ item.orig_desc }}</p>
                         {% endif %}
-                        <span class="timestamp">{{ item.relative_time }}</span>
+                        <div class="card-footer">
+                            <a href="{{ item.link }}" target="_blank" rel="noopener">Читать источник</a>
+                            {% if item.image %}
+                            <a href="{{ item.image }}" target="_blank" rel="noopener">Первичный визуал</a>
+                            {% endif %}
+                            <span class="timestamp">{{ item.relative_time }}</span>
+                        </div>
                     </div>
-                </div>
-            </article>
-            {% endfor %}
-        </section>
-        {% else %}
-        <div class="no-results">Не найдено материалов по текущему запросу. Попробуйте изменить ключевые слова или отключите фильтр.</div>
-        {% endif %}
-
-        {% if view_all and all_news %}
-        <section class="all-news">
-            <h2>Все загруженные материалы</h2>
-            <ul>
-                {% for entry in all_news %}
-                <li>
-                    <span class="source">{{ entry.source }}</span>
-                    <a href="{{ entry.link }}" target="_blank" rel="noopener">{{ entry.title }}</a>
-                    <span class="time">{{ entry.time }} · {{ entry.relative_time }}</span>
-                </li>
+                </article>
                 {% endfor %}
-            </ul>
-        </section>
-        {% endif %}
+            </section>
+            {% else %}
+            <div class="no-results">Не найдено материалов по текущему запросу. Попробуйте изменить ключевые слова или отключите фильтр.</div>
+            {% endif %}
 
-        <footer class="note">
-            Источники: BBC, Al Jazeera, Jerusalem Post, Haaretz, Times of Israel, Kyiv Independent, Guardian, Associated Press, Deutsche Welle, Sky News. Данные обновляются на лету; кэширование используется для ускорения и экономии запросов.
-        </footer>
+            {% if view_all and all_news %}
+            <section class="all-news">
+                <h2>Все загруженные материалы</h2>
+                <ul>
+                    {% for entry in all_news %}
+                    <li>
+                        <span class="source">{{ entry.source }}</span>
+                        <a href="{{ entry.link }}" target="_blank" rel="noopener">{{ entry.title }}</a>
+                        <span class="time">{{ entry.time }} · {{ entry.relative_time }}</span>
+                    </li>
+                    {% endfor %}
+                </ul>
+            </section>
+            {% endif %}
+
+            <footer class="note">
+                Источники: BBC, Al Jazeera, Jerusalem Post, Haaretz, Times of Israel, Kyiv Independent, Guardian, Associated Press, Deutsche Welle, Sky News. Данные обновляются на лету; кэширование используется для ускорения и экономии запросов.
+            </footer>
+        </div>
     </main>
 </body>
 </html>
