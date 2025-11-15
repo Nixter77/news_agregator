@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 import os
 import pathlib
 import re
@@ -28,9 +29,10 @@ from urllib3.util.retry import Retry
 # ─── Configuration ─────────────────────────────────────────────────────────────
 TARGET_LANG = os.environ.get("NEWS_TARGET_LANG", "ru")
 CACHE_TTL = int(os.environ.get("NEWS_CACHE_TTL", 15 * 60))  # seconds
-ITEMS_PER_SOURCE = int(os.environ.get("NEWS_ITEMS_PER_SOURCE", 8))
+ITEMS_PER_SOURCE = int(os.environ.get("NEWS_ITEMS_PER_SOURCE", 20))
 CACHE_DIR = pathlib.Path(os.environ.get("NEWS_CACHE_DIR", "/tmp/rss_cache"))
 CACHE_DIR.mkdir(exist_ok=True)
+NEWS_ITEMS_CACHE_FILE = CACHE_DIR / "news_items.json"
 
 NEWS_SOURCES: Dict[str, str] = {
     "BBC News": "https://feeds.bbci.co.uk/news/world/rss.xml",
@@ -166,7 +168,7 @@ class NewsItem:
     _pictograms: Dict[Tuple[str, str], str] = field(default_factory=dict, init=False, repr=False)
     _translations: Dict[str, Tuple[str, str]] = field(default_factory=dict, init=False, repr=False)
 
-    def update_search_tokens(self) -> None:
+    def update_search_tokens(self, extra_texts: Optional[Iterable[str]] = None) -> None:
         tokens: set[str] = set()
         for value in (
             self.title,
@@ -176,6 +178,9 @@ class NewsItem:
             self.source,
         ):
             tokens.update(tokenize(value))
+        if extra_texts:
+            for value in extra_texts:
+                tokens.update(tokenize(value))
         self.search_tokens = tokens
 
     def translated(self, target_lang: str = TARGET_LANG) -> Tuple[str, str]:
@@ -196,6 +201,8 @@ class NewsCache:
     def __init__(self) -> None:
         self.timestamp = 0.0
         self.items: List[NewsItem] = []
+        self.cache_path = NEWS_ITEMS_CACHE_FILE
+        self._load_from_disk()
 
     def refresh(self) -> None:
         aggregated: List[NewsItem] = []
@@ -222,6 +229,9 @@ class NewsCache:
                         time.mktime(entry.published_parsed), tz=timezone.utc
                     )
 
+                translated_title = translate_text(original_title, TARGET_LANG)
+                translated_description = translate_text(original_description, TARGET_LANG)
+
                 item = NewsItem(
                     title=original_title,
                     description=original_description,
@@ -233,16 +243,94 @@ class NewsCache:
                     orig_description=original_description,
                     accent=_select_accent(link or source),
                 )
-                item.update_search_tokens()
+                if translated_title or translated_description:
+                    item._translations[TARGET_LANG] = (translated_title, translated_description)
+                    extra_texts = (translated_title, translated_description)
+                else:
+                    extra_texts = None
+                item.update_search_tokens(extra_texts)
                 aggregated.append(item)
         aggregated.sort(key=lambda x: x.published, reverse=True)
         self.items = aggregated
         self.timestamp = time.time()
+        self._save_to_disk()
 
     def get_items(self) -> List[NewsItem]:
         if not self.items or (time.time() - self.timestamp) > CACHE_TTL:
             self.refresh()
         return self.items
+
+    # ─── Persistence Helpers ────────────────────────────────────────────────
+    def _serialize_item(self, item: NewsItem) -> dict:
+        payload = {
+            "title": item.title,
+            "description": item.description,
+            "link": item.link,
+            "source": item.source,
+            "published": item.published.isoformat(),
+            "image": item.image,
+            "orig_title": item.orig_title,
+            "orig_description": item.orig_description,
+            "accent": item.accent,
+            "search_tokens": sorted(item.search_tokens),
+        }
+        if item._translations:
+            payload["translations"] = {
+                lang: list(value)
+                for lang, value in item._translations.items()
+            }
+        return payload
+
+    def _save_to_disk(self) -> None:
+        if not self.items:
+            return
+        payload = {
+            "timestamp": self.timestamp,
+            "items": [self._serialize_item(item) for item in self.items],
+        }
+        tmp_path = self.cache_path.with_suffix(".tmp")
+        try:
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False))
+            tmp_path.replace(self.cache_path)
+        except OSError:
+            if tmp_path.exists():
+                tmp_path.unlink()
+
+    def _load_from_disk(self) -> None:
+        if not self.cache_path.exists():
+            return
+        try:
+            payload = json.loads(self.cache_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return
+        timestamp = float(payload.get("timestamp") or 0.0)
+        items_data = payload.get("items", [])
+        restored: List[NewsItem] = []
+        for entry in items_data:
+            try:
+                published = datetime.fromisoformat(entry.get("published", ""))
+            except (TypeError, ValueError):
+                continue
+            item = NewsItem(
+                title=entry.get("title", ""),
+                description=entry.get("description", ""),
+                link=entry.get("link", ""),
+                source=entry.get("source", ""),
+                published=published,
+                image=entry.get("image"),
+                orig_title=entry.get("orig_title", ""),
+                orig_description=entry.get("orig_description", ""),
+                accent=entry.get("accent", _select_accent(entry.get("link", "") or entry.get("source", ""))),
+            )
+            item.search_tokens = set(entry.get("search_tokens", []))
+            translations = entry.get("translations", {}) or {}
+            for lang, pair in translations.items():
+                if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                    item._translations[lang] = (pair[0], pair[1])
+            restored.append(item)
+        if restored:
+            self.items = restored
+            self.timestamp = timestamp or time.time()
 
 
 NEWS_CACHE = NewsCache()
