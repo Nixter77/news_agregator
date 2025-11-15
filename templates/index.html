@@ -211,6 +211,7 @@
             flex-wrap: wrap;
             gap: 12px;
             justify-content: flex-start;
+            width: 100%;
         }
 
         form.controls button {
@@ -615,11 +616,43 @@
             }
 
             form.controls .control-actions {
+                flex-direction: column;
                 justify-content: stretch;
+                width: 100%;
             }
 
             form.controls button {
                 flex: 1 1 100%;
+                width: 100%;
+                text-align: center;
+            }
+
+            .summary-bar {
+                flex-direction: column;
+                align-items: flex-start;
+                padding: 16px;
+            }
+
+            .summary-bar .timestamp,
+            .summary-bar a {
+                margin-left: 0;
+            }
+
+            article.card {
+                padding: 22px 18px;
+            }
+
+            .pictogram-wrapper {
+                padding: 10px;
+            }
+
+            .card-body h2 {
+                font-size: 1.4rem;
+            }
+
+            .card-footer {
+                flex-direction: column;
+                align-items: stretch;
             }
 
             .summary-bar {
