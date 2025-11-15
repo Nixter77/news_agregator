@@ -28,7 +28,7 @@ from urllib3.util.retry import Retry
 # ─── Configuration ─────────────────────────────────────────────────────────────
 TARGET_LANG = os.environ.get("NEWS_TARGET_LANG", "ru")
 CACHE_TTL = int(os.environ.get("NEWS_CACHE_TTL", 15 * 60))  # seconds
-ITEMS_PER_SOURCE = int(os.environ.get("NEWS_ITEMS_PER_SOURCE", 8))
+ITEMS_PER_SOURCE = int(os.environ.get("NEWS_ITEMS_PER_SOURCE", 20))
 CACHE_DIR = pathlib.Path(os.environ.get("NEWS_CACHE_DIR", "/tmp/rss_cache"))
 CACHE_DIR.mkdir(exist_ok=True)
 
@@ -196,6 +196,17 @@ class NewsCache:
     def __init__(self) -> None:
         self.timestamp = 0.0
         self.items: List[NewsItem] = []
+        self._token_index: Dict[str, set[int]] = {}
+        self._search_cache: Dict[Tuple[str, ...], List[int]] = {}
+
+    def _rebuild_index(self) -> None:
+        self._token_index = {}
+        for idx, item in enumerate(self.items):
+            if not item.search_tokens:
+                item.update_search_tokens()
+            for token in item.search_tokens:
+                self._token_index.setdefault(token, set()).add(idx)
+        self._search_cache.clear()
 
     def refresh(self) -> None:
         aggregated: List[NewsItem] = []
@@ -233,16 +244,47 @@ class NewsCache:
                     orig_description=original_description,
                     accent=_select_accent(link or source),
                 )
-                item.update_search_tokens()
                 aggregated.append(item)
         aggregated.sort(key=lambda x: x.published, reverse=True)
         self.items = aggregated
         self.timestamp = time.time()
+        self._rebuild_index()
 
     def get_items(self) -> List[NewsItem]:
         if not self.items or (time.time() - self.timestamp) > CACHE_TTL:
             self.refresh()
         return self.items
+
+    def search(self, query: str, items: Optional[List[NewsItem]] = None) -> List[NewsItem]:
+        if items is None:
+            items = self.get_items()
+        tokens = tokenize(query)
+        if not tokens:
+            return list(items)
+
+        cache_key = tuple(tokens)
+        cached_indexes = self._search_cache.get(cache_key)
+        if cached_indexes is not None:
+            return [items[idx] for idx in cached_indexes if idx < len(items)]
+
+        if not self._token_index:
+            self._rebuild_index()
+
+        candidate_ids: Optional[set[int]] = None
+        for token in tokens:
+            token_matches = self._token_index.get(token)
+            if not token_matches:
+                candidate_ids = set()
+                break
+            candidate_ids = token_matches if candidate_ids is None else candidate_ids & token_matches
+
+        if not candidate_ids:
+            self._search_cache[cache_key] = []
+            return []
+
+        ordered_indexes = [idx for idx, _ in enumerate(items) if idx in candidate_ids]
+        self._search_cache[cache_key] = ordered_indexes
+        return [items[idx] for idx in ordered_indexes]
 
 
 NEWS_CACHE = NewsCache()
@@ -377,18 +419,6 @@ def humanize_delta(dt: datetime) -> str:
     return f"{days} дн назад"
 
 
-def filter_items(items: Iterable[NewsItem], query: str) -> List[NewsItem]:
-    tokens = tokenize(query)
-    if not tokens:
-        return list(items)
-    required = set(tokens)
-    result = []
-    for item in items:
-        if required.issubset(item.search_tokens):
-            result.append(item)
-    return result
-
-
 def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> List[dict]:
     view_models = []
     for item in items:
@@ -474,7 +504,7 @@ def index(
                 # if translation fails, fall back to original query
                 translated_query = None
 
-    filtered = filter_items(items, search_q)
+    filtered = NEWS_CACHE.search(search_q, items)
     view_models = prepare_view_models(filtered, translate_enabled)
 
     all_news = None
