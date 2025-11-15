@@ -652,10 +652,6 @@
                 </div>
             </form>
 
-            {% if translated_query and translated_query != query %}
-            <div class="translation-note">Поиск выполняется по переводу: «{{ translated_query }}»</div>
-            {% endif %}
-
             <div class="summary-bar">
                 <span class="stat-chip"><strong>{{ matches }}</strong> материалов из {{ total }}</span>
                 {% if query %}
