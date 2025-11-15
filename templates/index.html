@@ -37,18 +37,20 @@
                         linear-gradient(180deg, #fff9f0 0%, #f6e7d6 48%, #f2decc 100%);
             color: var(--ink);
             min-height: 100vh;
+            padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+                     max(24px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
         }
 
         main {
             max-width: 1240px;
             margin: 0 auto;
-            padding: 72px clamp(18px, 5vw, 42px) 120px;
+            padding: 48px clamp(12px, 5vw, 42px) 96px;
         }
 
         .surface {
             background: var(--veil);
             border-radius: var(--radius-xl);
-            padding: clamp(32px, 5vw, 56px);
+            padding: clamp(24px, 5vw, 56px);
             border: 1px solid rgba(255, 255, 255, 0.6);
             box-shadow: var(--shadow-soft);
             backdrop-filter: blur(24px);
@@ -583,11 +585,33 @@
 
         @media (max-width: 640px) {
             main {
-                padding: 56px 16px 96px;
+                padding: 40px 14px 82px;
+            }
+
+            header.hero {
+                text-align: center;
+            }
+
+            .tagline {
+                font-size: 1rem;
             }
 
             .surface {
-                padding: 28px 20px 44px;
+                padding: 24px 18px 38px;
+            }
+
+            form.controls {
+                padding: 18px 16px 22px;
+                gap: 14px;
+            }
+
+            form.controls .toggles {
+                flex-direction: column;
+            }
+
+            label.toggle {
+                width: 100%;
+                justify-content: space-between;
             }
 
             form.controls .control-actions {
@@ -596,6 +620,34 @@
 
             form.controls button {
                 flex: 1 1 100%;
+            }
+
+            .summary-bar {
+                flex-direction: column;
+                align-items: flex-start;
+                padding: 16px;
+            }
+
+            .summary-bar .timestamp,
+            .summary-bar a {
+                margin-left: 0;
+            }
+
+            article.card {
+                padding: 22px 18px;
+            }
+
+            .pictogram-wrapper {
+                padding: 10px;
+            }
+
+            .card-body h2 {
+                font-size: 1.4rem;
+            }
+
+            .card-footer {
+                flex-direction: column;
+                align-items: stretch;
             }
 
             .card-footer a,
@@ -611,6 +663,60 @@
 
             .all-news li .time {
                 justify-self: start;
+            }
+        }
+
+        @media (max-width: 420px) {
+            body {
+                font-size: 0.98rem;
+            }
+
+            header.hero h1 {
+                font-size: 2.1rem;
+                letter-spacing: 1px;
+            }
+
+            .tagline {
+                line-height: 1.5;
+            }
+
+            form.controls .search-field {
+                padding: 10px 14px;
+            }
+
+            .toggle__indicator {
+                width: 42px;
+                height: 22px;
+            }
+
+            .toggle__indicator::after {
+                width: 16px;
+                height: 16px;
+            }
+
+            label.toggle {
+                font-size: 0.9rem;
+                padding: 10px 14px;
+            }
+
+            article.card {
+                border-radius: 20px;
+            }
+
+            .card-body h2 {
+                font-size: 1.3rem;
+            }
+
+            .card-body .description {
+                font-size: 0.96rem;
+            }
+
+            .all-news {
+                padding: 20px 16px;
+            }
+
+            .all-news li {
+                padding: 12px;
             }
         }
     </style>
