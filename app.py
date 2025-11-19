@@ -56,6 +56,42 @@ ACCENT_COLORS = [
 
 TOKEN_PATTERN = re.compile(r"[\w\-]+", re.UNICODE)
 
+CYRILLIC_TO_LATIN = {
+    "а": "a",
+    "б": "b",
+    "в": "v",
+    "г": "g",
+    "д": "d",
+    "е": "e",
+    "ё": "e",
+    "ж": "zh",
+    "з": "z",
+    "и": "i",
+    "й": "i",
+    "к": "k",
+    "л": "l",
+    "м": "m",
+    "н": "n",
+    "о": "o",
+    "п": "p",
+    "р": "r",
+    "с": "s",
+    "т": "t",
+    "у": "u",
+    "ф": "f",
+    "х": "h",
+    "ц": "ts",
+    "ч": "ch",
+    "ш": "sh",
+    "щ": "shch",
+    "ъ": "",
+    "ы": "y",
+    "ь": "",
+    "э": "e",
+    "ю": "yu",
+    "я": "ya",
+}
+
 # ─── HTTP Session ─────────────────────────────────────────────────────────────
 def _build_session() -> requests.Session:
     session = requests.Session()
@@ -81,6 +117,24 @@ def tokenize(text: str) -> List[str]:
     if not text:
         return []
     return [token for token in TOKEN_PATTERN.findall(text.lower()) if token]
+
+
+def transliterate_cyrillic(text: str) -> str:
+    if not text:
+        return ""
+    return "".join(CYRILLIC_TO_LATIN.get(char, char) for char in text.lower())
+
+
+def build_query_groups(query: str) -> List[Tuple[str, ...]]:
+    tokens = tokenize(query)
+    groups: List[Tuple[str, ...]] = []
+    for token in tokens:
+        variants = {token}
+        transliterated = transliterate_cyrillic(token)
+        if transliterated and transliterated != token:
+            variants.add(transliterated)
+        groups.append(tuple(sorted(variants)))
+    return groups
 
 
 @lru_cache(maxsize=8)
@@ -258,11 +312,11 @@ class NewsCache:
     def search(self, query: str, items: Optional[List[NewsItem]] = None) -> List[NewsItem]:
         if items is None:
             items = self.get_items()
-        tokens = tokenize(query)
-        if not tokens:
+        token_groups = build_query_groups(query)
+        if not token_groups:
             return list(items)
 
-        cache_key = tuple(tokens)
+        cache_key = tuple(token_groups)
         cached_indexes = self._search_cache.get(cache_key)
         if cached_indexes is not None:
             return [items[idx] for idx in cached_indexes if idx < len(items)]
@@ -271,12 +325,18 @@ class NewsCache:
             self._rebuild_index()
 
         candidate_ids: Optional[set[int]] = None
-        for token in tokens:
-            token_matches = self._token_index.get(token)
-            if not token_matches:
+        for variants in token_groups:
+            variant_matches: set[int] = set()
+            for token in variants:
+                matches = self._token_index.get(token)
+                if matches:
+                    variant_matches.update(matches)
+            if not variant_matches:
                 candidate_ids = set()
                 break
-            candidate_ids = token_matches if candidate_ids is None else candidate_ids & token_matches
+            candidate_ids = (
+                variant_matches if candidate_ids is None else candidate_ids & variant_matches
+            )
 
         if not candidate_ids:
             self._search_cache[cache_key] = []
@@ -490,21 +550,7 @@ def index(
     view_all_enabled = any(val.lower() not in {"", "0", "off", "false"} for val in view_all_values)
 
     items = NEWS_CACHE.get_items()
-    # If query contains Cyrillic characters, translate it to English for searching
-    search_q = q or ""
-    translated_query: Optional[str] = None
-    if q:
-        # detect Cyrillic letters (basic heuristic)
-        if re.search(r"[\u0400-\u04FF]", q):
-            try:
-                # translate user's Russian query to English for better matching against English source text
-                translated_query = GoogleTranslator(source="auto", target="en").translate(q)
-                search_q = translated_query or search_q
-            except Exception:
-                # if translation fails, fall back to original query
-                translated_query = None
-
-    filtered = NEWS_CACHE.search(search_q, items)
+    filtered = NEWS_CACHE.search(q or "", items)
     view_models = prepare_view_models(filtered, translate_enabled)
 
     all_news = None
@@ -525,7 +571,6 @@ def index(
         request=request,
         items=view_models,
         query=q,
-        translated_query=translated_query,
         translate=translate_enabled,
         total=len(items),
         matches=len(filtered),

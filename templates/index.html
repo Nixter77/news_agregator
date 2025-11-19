@@ -107,6 +107,7 @@
             padding: clamp(20px, 4vw, 28px);
             border: 1px solid rgba(42, 31, 20, 0.1);
             box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+            width: 100%;
         }
 
         form.controls input[type="hidden"] {
@@ -766,10 +767,6 @@
                     <button type="submit" name="action" value="refresh" class="refresh-button">Обновить ленту</button>
                 </div>
             </form>
-
-            {% if translated_query and translated_query != query %}
-            <div class="translation-note">Поиск выполняется по переводу: «{{ translated_query }}»</div>
-            {% endif %}
 
             <div class="summary-bar">
                 <span class="stat-chip"><strong>{{ matches }}</strong> материалов из {{ total }}</span>
