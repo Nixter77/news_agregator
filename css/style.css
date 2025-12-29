@@ -375,17 +375,17 @@ h1, h2, h3, h4, h5, h6 {
 /* News Grid - Adaptive */
 #news-container {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  grid-template-columns: 1fr;
   gap: var(--space-lg);
 }
 
-@media (min-width: 768px) {
+@media (min-width: 600px) {
   #news-container {
     grid-template-columns: repeat(2, 1fr);
   }
 }
 
-@media (min-width: 1024px) {
+@media (min-width: 900px) {
   #news-container {
     grid-template-columns: repeat(3, 1fr);
   }
@@ -458,20 +458,18 @@ h1, h2, h3, h4, h5, h6 {
   position: absolute;
   top: 12px;
   left: 12px;
-  padding: 5px 10px;
-  font-size: 0.625rem;
+  padding: 6px 12px;
+  font-size: 0.6875rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.02em;
   color: var(--apple-white);
-  background: rgba(0, 0, 0, 0.65);
+  background: rgba(0, 0, 0, 0.7);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border-radius: var(--radius-full);
   z-index: 2;
   max-width: calc(100% - 24px);
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

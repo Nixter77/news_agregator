@@ -155,7 +155,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const timeMeta = computeTimeMeta(article.publishedAt);
     const sourceTitle = sanitizeString(article.sourceTitle || article.source);
     const imageSeed = sanitizeString(article.source || 'news');
-    const fallbackImage = `https://source.unsplash.com/collection/1118891/800x600?sig=${encodeURIComponent(imageSeed)}`;
+    // Используем picsum.photos как надёжный fallback
+    const fallbackImage = `https://picsum.photos/seed/${encodeURIComponent(imageSeed)}/800/500`;
     const image = sanitizeString(article.imageUrl) || fallbackImage;
 
     const highlightedTitle = highlightMatches(title, highlightTokens);
@@ -167,6 +168,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const safeSourceTitle = escapeHtml(sourceTitle);
     const safePublished = escapeHtml(article.publishedAt || '');
     const safeAlt = escapeHtml(title);
+
+    const safeFallback = escapeHtml(fallbackImage);
 
     col.innerHTML = `
       <a href="${safeLink}" target="_blank" rel="noopener noreferrer" class="news-card-link">
@@ -180,7 +183,7 @@ document.addEventListener('DOMContentLoaded', () => {
           data-published="${safePublished}"
         >
           <div class="news-card-media">
-            <img src="${safeImage}" class="news-card-img" alt="${safeAlt}">
+            <img src="${safeImage}" class="news-card-img" alt="${safeAlt}" onerror="this.onerror=null;this.src='${safeFallback}';">
             <span class="news-card-badge">${safeSourceTitle}</span>
           </div>
           <div class="news-card-body">
