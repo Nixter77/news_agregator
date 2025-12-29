@@ -148,7 +148,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function createCard(article, highlightTokens) {
     const col = document.createElement('div');
-    col.className = 'col-12 col-md-6 col-xl-4';
+    col.className = 'news-grid-item';
 
     const title = sanitizeString(article.title_ru || article.title);
     const snippet = sanitizeString(article.snippet_ru || article.snippet);
