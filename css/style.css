@@ -581,18 +581,78 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .btn-close {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   background: var(--background-secondary);
   border-radius: var(--radius-full);
   opacity: 1;
   transition: all var(--transition-fast);
   filter: none;
+  flex-shrink: 0;
 }
 
 .btn-close:hover {
   background: var(--apple-gray-300);
+}
+
+/* Modal Footer for Mobile */
+.modal-footer {
+  padding: 16px 20px;
+  background: var(--background-primary);
+  border-top: 1px solid var(--border-color);
+}
+
+.modal-footer .btn-secondary {
+  background: var(--apple-gray-600);
+  border: none;
+  color: var(--apple-white);
+  font-weight: 500;
+  padding: 14px 20px;
+  border-radius: var(--radius-md);
+  font-size: 1rem;
+}
+
+.modal-footer .btn-secondary:hover,
+.modal-footer .btn-secondary:active {
+  background: var(--apple-gray-500);
+}
+
+/* Mobile Modal Improvements */
+@media (max-width: 767px) {
+  .modal-dialog {
+    margin: 0;
+    max-width: 100%;
+    min-height: 100vh;
+  }
+
+  .modal-content {
+    min-height: 100vh;
+    border-radius: 0;
+  }
+
+  .modal-header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--background-primary);
+  }
+
+  .modal-header .btn-close {
+    width: 44px;
+    height: 44px;
+    background-size: 14px;
+  }
+
+  .modal-body {
+    padding: 20px;
+  }
+
+  .modal-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+  }
 }
 
 /* Modal Article */
