@@ -222,9 +222,9 @@ function parseDate(dateString) {
 function tokenize(query) {
   return query
     .toLowerCase()
-    .split(/[\s,.;:!?"'()\\[\]{}<>/@#%^&*+=|~`]+/)
+    .split(/[\s,.;:!?"'()\[\]{}<>/@#%^&*+=|~`]+/)
     .map(token => token.trim())
-    .filter(Boolean);
+    .filter(token => token.length >= 2); // Минимальная длина токена 2 символа
 }
 
 function buildSearchTokens(originalQuery, translatedQuery) {
@@ -409,15 +409,39 @@ function normalizeArticle(sourceKey, item, index) {
   };
 }
 
-function scoreArticle(article, tokens) {
-  if (!tokens.length) return { article, score: 0 };
-  const haystack = `${article.title} ${article.snippet} ${article.fullText}`.toLowerCase();
+// Создаем regex'ы для токенов один раз (оптимизация производительности)
+function buildTokenRegexes(tokens) {
+  return tokens.map(token => {
+    const escapedToken = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Добавляем дефис для корректной обработки слов типа "COVID-19"
+    return new RegExp(`(?:^|[\\s,.;:!?"'()\\[\\]{}<>/@#%^&*+=|~\`-])${escapedToken}(?:[\\s,.;:!?"'()\\[\\]{}<>/@#%^&*+=|~\`-]|$)`, 'iu');
+  });
+}
+
+function scoreArticle(article, tokenRegexes) {
+  if (!tokenRegexes.length) return { article, score: 0 };
+
+  const title = (article.title || '').toLowerCase();
+  const snippet = (article.snippet || '').toLowerCase();
+  const fullText = (article.fullText || '').toLowerCase();
+
   let score = 0;
-  for (const token of tokens) {
-    if (haystack.includes(token)) {
+
+  for (const regex of tokenRegexes) {
+    // Вес для заголовка (самый важный)
+    if (regex.test(title)) {
+      score += 5;
+    }
+    // Вес для сниппета (средняя важность)
+    if (regex.test(snippet)) {
+      score += 3;
+    }
+    // Вес для полного текста (низкая важность)
+    if (regex.test(fullText)) {
       score += 1;
     }
   }
+
   return { article, score };
 }
 
@@ -473,8 +497,10 @@ app.get('/api/search', async (req, res) => {
     let articles = articlesNested.flat();
 
     if (tokens.length) {
+      // Компилируем regex'ы один раз для всех статей
+      const tokenRegexes = buildTokenRegexes(tokens);
       articles = articles
-        .map(article => scoreArticle(article, tokens))
+        .map(article => scoreArticle(article, tokenRegexes))
         .filter(item => item.score > 0)
         .sort((a, b) => {
           if (b.score !== a.score) {
