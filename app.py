@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import hashlib
 import io
 import os
@@ -262,43 +263,79 @@ class NewsCache:
                 self._token_index.setdefault(token, set()).add(idx)
         self._search_cache.clear()
 
+    def _fetch_source(self, source: str, url: str) -> List[NewsItem]:
+        items: List[NewsItem] = []
+        feed_bytes = load_raw_rss(url)
+        if not feed_bytes:
+            return items
+        parsed = feedparser.parse(feed_bytes)
+        entries = parsed.entries[:ITEMS_PER_SOURCE]
+        for entry in entries:
+            link = getattr(entry, "link", "").split("?", 1)[0]
+            if not link:
+                continue
+
+            original_title = getattr(entry, "title", "")
+            raw_summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
+            original_description = clean_html(raw_summary)
+
+            published = datetime.now(timezone.utc)
+            if getattr(entry, "published_parsed", None):
+                published = datetime.fromtimestamp(
+                    time.mktime(entry.published_parsed), tz=timezone.utc
+                )
+
+            item = NewsItem(
+                title=original_title,
+                description=original_description,
+                link=link,
+                source=source,
+                published=published,
+                image=first_image(entry),
+                orig_title=original_title,
+                orig_description=original_description,
+                accent=_select_accent(link or source),
+            )
+            items.append(item)
+        return items
+
     def refresh(self) -> None:
         aggregated: List[NewsItem] = []
         seen_links = set()
-        for source, url in NEWS_SOURCES.items():
-            feed_bytes = load_raw_rss(url)
-            if not feed_bytes:
-                continue
-            parsed = feedparser.parse(feed_bytes)
-            entries = parsed.entries[:ITEMS_PER_SOURCE]
-            for entry in entries:
-                link = getattr(entry, "link", "").split("?", 1)[0]
-                if not link or link in seen_links:
+
+        # Execute fetches in parallel
+        sources_list = list(NEWS_SOURCES.items())
+        results: Dict[str, List[NewsItem]] = {}
+
+        if not sources_list:
+            self.items = []
+            self.timestamp = time.time()
+            self._rebuild_index()
+            return
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(sources_list), 20)) as executor:
+            future_to_source = {
+                executor.submit(self._fetch_source, source, url): source
+                for source, url in sources_list
+            }
+
+            for future in concurrent.futures.as_completed(future_to_source):
+                source = future_to_source[future]
+                try:
+                    results[source] = future.result()
+                except Exception:
+                    # In case of error, we just treat it as empty result for that source
+                    results[source] = []
+
+        # Aggregate results preserving source priority order
+        for source, _ in sources_list:
+            items = results.get(source, [])
+            for item in items:
+                if item.link in seen_links:
                     continue
-                seen_links.add(link)
-
-                original_title = getattr(entry, "title", "")
-                raw_summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
-                original_description = clean_html(raw_summary)
-
-                published = datetime.now(timezone.utc)
-                if getattr(entry, "published_parsed", None):
-                    published = datetime.fromtimestamp(
-                        time.mktime(entry.published_parsed), tz=timezone.utc
-                    )
-
-                item = NewsItem(
-                    title=original_title,
-                    description=original_description,
-                    link=link,
-                    source=source,
-                    published=published,
-                    image=first_image(entry),
-                    orig_title=original_title,
-                    orig_description=original_description,
-                    accent=_select_accent(link or source),
-                )
+                seen_links.add(item.link)
                 aggregated.append(item)
+
         aggregated.sort(key=lambda x: x.published, reverse=True)
         self.items = aggregated
         self.timestamp = time.time()
