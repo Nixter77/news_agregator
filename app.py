@@ -436,8 +436,9 @@ def _create_pictogram_cached(key: Tuple[str, str, str, str]) -> str:
     )
     draw.rectangle([(width * 0.35, height * 0.68), (width * 0.85, height * 0.82)], fill="#d62828")
 
-    title_font = get_font("DejaVuSans-Bold.ttf", 38)
-    summary_font = get_font("DejaVuSans.ttf", 22)
+    # Use Montserrat fonts from the fonts directory
+    title_font = get_font("fonts/Montserrat-Bold.woff", 38)
+    summary_font = get_font("fonts/Montserrat-Regular.woff", 22)
 
     title_area_x = int(width * 0.33)
     title_area_width = int(width * 0.62)
