@@ -101,6 +101,7 @@
                 "search"
                 "toggles"
                 "actions";
+            grid-template-columns: minmax(0, 1fr);
             background: var(--glass);
             border-radius: var(--radius-lg);
             padding: clamp(20px, 4vw, 28px);
@@ -213,7 +214,7 @@
             gap: 12px;
             justify-content: flex-start;
             width: 100%;
-
+            min-width: 0;
         }
 
         form.controls button {
@@ -627,6 +628,7 @@
 
             form.controls button {
                 flex: 1 1 auto;
+                padding: 12px 20px;
                 width: 100%;
             }
 

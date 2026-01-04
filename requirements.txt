@@ -5,6 +5,4 @@ requests
 feedparser
 beautifulsoup4
 deep-translator
-Pillow
-lxml
-urllib3
+pillow
