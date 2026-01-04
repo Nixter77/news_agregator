@@ -1,6 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
   const searchForm = document.getElementById('search-form');
   const searchButton = document.getElementById('search-button');
+  const refreshButton = document.getElementById('refresh-button');
   const newsContainer = document.getElementById('news-container');
   const newsModalElement = document.getElementById('news-modal');
   const newsModal = newsModalElement ? new bootstrap.Modal(newsModalElement) : null;
@@ -10,6 +11,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const topicInput = document.getElementById('topic-input');
   const loadingIndicator = document.getElementById('loading-indicator');
   const searchFeedback = document.getElementById('search-feedback');
+  const translateToggle = document.getElementById('translate-toggle');
+  const viewAllToggle = document.getElementById('view-all-toggle');
 
   const relativeTimeFormatter = new Intl.RelativeTimeFormat('ru', { numeric: 'auto' });
   const absoluteTimeFormatter = new Intl.DateTimeFormat('ru-RU', {
@@ -35,7 +38,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function splitIntoTokens(query) {
     return sanitizeString(query)
       .toLowerCase()
-      .split(/[\s,.;:!?"'()\\[\]{}<>/@#%^&*+=|~`]+/)
+      .split(/[\s,.;:!?"'()\[\]{}<>/@#%^&*+=|~`]+/)
       .map(token => token.trim())
       .filter(token => token.length > 2);
   }
@@ -88,6 +91,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function isTranslateEnabled() {
+    return translateToggle?.checked ?? true;
+  }
+
+  function isViewAllEnabled() {
+    return viewAllToggle?.checked ?? false;
+  }
+
   async function translateViaApi(text) {
     const safeText = sanitizeString(text);
     if (!safeText) return 'Полный текст недоступен для этой заметки.';
@@ -113,6 +124,7 @@ document.addEventListener('DOMContentLoaded', () => {
     newsContainer.innerHTML = '';
     const messageParts = [];
     const highlightTokens = splitIntoTokens(query);
+    const translate = isTranslateEnabled();
 
     if (!Array.isArray(articles) || articles.length === 0) {
       if (query) {
@@ -120,7 +132,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } else {
         searchFeedback.textContent = 'Пока свежих новостей нет. Попробуйте выбрать конкретный источник или обновите позже.';
       }
-      document.title = 'Новостной Агрегатор';
+      document.title = 'Новости в плакатах';
       return;
     }
 
@@ -137,25 +149,28 @@ document.addEventListener('DOMContentLoaded', () => {
       messageParts.push(`по запросу «${query}»`);
     }
     searchFeedback.textContent = `${messageParts.join(' ')}.`;
-    document.title = query ? `«${query}» — результаты поиска · Новостной агрегатор` : 'Новостной Агрегатор';
+    document.title = query ? `«${query}» — результаты поиска · Новости в плакатах` : 'Новости в плакатах';
 
     const fragment = document.createDocumentFragment();
     articles.forEach(article => {
-      fragment.appendChild(createCard(article, highlightTokens));
+      fragment.appendChild(createCard(article, highlightTokens, translate));
     });
     newsContainer.appendChild(fragment);
   }
 
-  function createCard(article, highlightTokens) {
+  function createCard(article, highlightTokens, translate = true) {
     const col = document.createElement('div');
     col.className = 'news-grid-item';
 
-    const title = sanitizeString(article.title_ru || article.title);
-    const snippet = sanitizeString(article.snippet_ru || article.snippet);
+    const title = translate
+      ? sanitizeString(article.title_ru || article.title)
+      : sanitizeString(article.title);
+    const snippet = translate
+      ? sanitizeString(article.snippet_ru || article.snippet)
+      : sanitizeString(article.snippet);
     const timeMeta = computeTimeMeta(article.publishedAt);
     const sourceTitle = sanitizeString(article.sourceTitle || article.source);
     const imageSeed = sanitizeString(article.source || 'news');
-    // Используем picsum.photos как надёжный fallback
     const fallbackImage = `https://picsum.photos/seed/${encodeURIComponent(imageSeed)}/800/500`;
     const image = sanitizeString(article.imageUrl) || fallbackImage;
 
@@ -202,16 +217,23 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function fetchAndDisplayNews(options = {}) {
-    const { initial = false } = options;
+    const { initial = false, refresh = false } = options;
     const query = sanitizeString(topicInput.value).trim();
     const source = sanitizeString(sourceSelect.value);
+    const viewAll = isViewAllEnabled();
 
     const params = new URLSearchParams();
     if (query) params.set('q', query);
     if (source) params.set('source', source);
+    if (viewAll) params.set('view_all', 'true');
+    if (refresh) params.set('refresh', 'true');
 
     setLoading(true);
-    searchFeedback.textContent = initial ? 'Подбираем актуальные материалы…' : 'Ищем новости…';
+    if (refresh) {
+      searchFeedback.textContent = 'Обновляем ленту новостей...';
+    } else {
+      searchFeedback.textContent = initial ? 'Подбираем актуальные материалы...' : 'Ищем новости...';
+    }
 
     try {
       const response = await fetch(`/api/search?${params.toString()}`);
@@ -242,7 +264,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const publishedAt = card.dataset.published;
     const timeMeta = computeTimeMeta(publishedAt);
     const title = card.querySelector('.news-card-title')?.textContent || '';
-    const translatedFull = rawFull ? await translateViaApi(rawFull) : 'Полный текст недоступен для этой заметки.';
+
+    const translate = isTranslateEnabled();
+    const translatedFull = (rawFull && translate)
+      ? await translateViaApi(rawFull)
+      : (rawFull || 'Полный текст недоступен для этой заметки.');
     const imageSrc = card.querySelector('.news-card-img')?.src;
 
     newsModalLabel.textContent = title;
@@ -291,6 +317,11 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchAndDisplayNews();
   });
 
+  refreshButton?.addEventListener('click', event => {
+    event.preventDefault();
+    fetchAndDisplayNews({ refresh: true });
+  });
+
   topicInput?.addEventListener('input', throttledFetch);
   topicInput?.addEventListener('keydown', event => {
     if (event.key === 'Enter') {
@@ -301,6 +332,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
   sourceSelect?.addEventListener('change', () => fetchAndDisplayNews());
   newsContainer?.addEventListener('click', handleCardClick);
+
+  // Toggle handlers - re-render with new translation setting
+  translateToggle?.addEventListener('change', () => {
+    // Re-fetch to apply translation preference
+    fetchAndDisplayNews();
+  });
+
+  viewAllToggle?.addEventListener('change', () => {
+    fetchAndDisplayNews();
+  });
 
   fetchAndDisplayNews({ initial: true });
 });

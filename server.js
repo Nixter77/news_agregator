@@ -457,14 +457,21 @@ app.get('/health', (req, res) => {
   });
 });
 
-// /api/search?q=topic&source=bbc
+// /api/search?q=topic&source=bbc&view_all=true&refresh=true
 app.get('/api/search', async (req, res) => {
   const source = (req.query.source || '').toLowerCase().slice(0, 50);
   let searchQuery = (req.query.q || '').trim();
+  const viewAll = req.query.view_all === 'true';
+  const refresh = req.query.refresh === 'true';
 
   // Validate and limit query length
   if (searchQuery.length > MAX_QUERY_LENGTH) {
     searchQuery = searchQuery.slice(0, MAX_QUERY_LENGTH);
+  }
+
+  // Clear RSS cache if refresh is requested
+  if (refresh) {
+    rssCache.clear();
   }
 
   try {
@@ -513,7 +520,9 @@ app.get('/api/search', async (req, res) => {
       articles.sort((a, b) => (b.publishedAtMs || 0) - (a.publishedAtMs || 0));
     }
 
-    const limited = articles.slice(0, 30);
+    // viewAll returns up to 100 items, otherwise 30
+    const limit = viewAll ? 100 : 30;
+    const limited = articles.slice(0, limit);
 
     const translated = await Promise.all(
       limited.map(async item => {

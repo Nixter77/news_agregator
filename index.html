@@ -3,99 +3,118 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Агрегатор новостей со всего мира с мгновенным переводом на русский язык">
-    <meta name="theme-color" content="#007AFF">
-    <title>Новостной Агрегатор</title>
+    <meta name="description" content="Свежая картина мира из внешних источников с мгновенным переводом на русский">
+    <meta name="theme-color" content="#5c7d63">
+    <title>Новости в плакатах</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
-    <link rel="stylesheet" href="css/style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
-    <header class="hero">
-        <div class="container">
-            <div class="hero-inner">
-                <h1 class="hero-title">Новостной Агрегатор</h1>
-                <p class="hero-subtitle">Свежая повестка из ведущих мировых источников с мгновенным переводом на русский</p>
-            </div>
-        </div>
-    </header>
-
     <main class="container">
-        <section class="search-panel">
-            <form id="search-form" class="row g-3 g-lg-4 align-items-end">
-                <div class="col-12 col-lg-4">
-                    <label for="source-select" class="form-label">Источник</label>
-                    <select class="form-select" id="source-select">
-                        <option value="" selected>Все источники</option>
-                        <optgroup label="Главные новости">
-                            <option value="bbc">BBC News</option>
-                            <option value="nyt">The New York Times</option>
-                            <option value="guardian">The Guardian</option>
-                            <option value="cnn">CNN</option>
-                            <option value="aljazeera">Al Jazeera</option>
-                            <option value="npr">NPR</option>
-                            <option value="reuters_world">Reuters</option>
-                        </optgroup>
-                        <optgroup label="Технологии">
-                            <option value="techcrunch">TechCrunch</option>
-                            <option value="verge">The Verge</option>
-                            <option value="wired">WIRED</option>
-                            <option value="engadget">Engadget</option>
-                            <option value="arstechnica">Ars Technica</option>
-                            <option value="hackernews">Hacker News</option>
-                            <option value="bbc_tech">BBC Tech</option>
-                            <option value="nyt_tech">NYT Tech</option>
-                            <option value="bloomberg_tech">Bloomberg Tech</option>
-                        </optgroup>
-                        <optgroup label="Бизнес">
-                            <option value="forbes">Forbes</option>
-                            <option value="bbc_business">BBC Business</option>
-                            <option value="axios">Axios</option>
-                        </optgroup>
-                        <optgroup label="Мир">
-                            <option value="nyt_world">NYT World</option>
-                            <option value="reddit_news">Reddit World News</option>
-                            <option value="politico">Politico</option>
-                        </optgroup>
-                        <optgroup label="Наука">
-                            <option value="sciencedaily">Science Daily</option>
-                            <option value="nature">Nature</option>
-                            <option value="phys">Phys.org</option>
-                            <option value="space">Space.com</option>
-                        </optgroup>
-                        <optgroup label="Культура">
-                            <option value="atlantic">The Atlantic</option>
-                            <option value="newyorker">The New Yorker</option>
-                        </optgroup>
-                        <optgroup label="Спорт">
-                            <option value="espn">ESPN</option>
-                        </optgroup>
-                    </select>
+        <div class="surface">
+            <header class="hero">
+                <div class="hero-inner">
+                    <h1 class="hero-title">Новости в плакатах</h1>
+                    <p class="hero-subtitle">Свежая картина мира из внешних источников, переведённая и готовая к чтению. Выберите тему, включите перевод и смотрите на события через форму и цвет.</p>
                 </div>
-                <div class="col-12 col-lg-6">
-                    <label for="topic-input" class="form-label">Ключевые слова</label>
-                    <input type="text" class="form-control" id="topic-input" placeholder="Введите несколько слов через пробел...">
-                </div>
-                <div class="col-12 col-lg-2">
-                    <button class="btn btn-primary btn-search w-100" id="search-button" type="submit">Найти</button>
-                </div>
-                <div class="col-12">
-                    <p class="search-hint text-muted mb-0">Введите несколько слов — мы найдем материалы, где встречается хотя бы одно из них, и отсортируем по свежести.</p>
-                </div>
-            </form>
-        </section>
+            </header>
 
-        <section class="news-section">
-            <div id="search-feedback" class="search-feedback"></div>
-            <div id="loading-indicator" class="loading-indicator d-none" aria-live="polite">
-                <div class="spinner-border" role="status" aria-hidden="true"></div>
-                <span class="loading-text">Загружаем свежие новости...</span>
-            </div>
-            <div id="news-container">
-                <!-- News items will be injected here by JavaScript -->
-            </div>
-        </section>
+            <section class="search-panel">
+                <form id="search-form" class="row g-3 g-lg-4 align-items-end">
+                    <div class="col-12 col-lg-4">
+                        <label for="source-select" class="form-label">Источник</label>
+                        <select class="form-select" id="source-select">
+                            <option value="" selected>Все источники</option>
+                            <optgroup label="Главные новости">
+                                <option value="bbc">BBC News</option>
+                                <option value="nyt">The New York Times</option>
+                                <option value="guardian">The Guardian</option>
+                                <option value="cnn">CNN</option>
+                                <option value="aljazeera">Al Jazeera</option>
+                                <option value="npr">NPR</option>
+                                <option value="reuters_world">Reuters</option>
+                            </optgroup>
+                            <optgroup label="Технологии">
+                                <option value="techcrunch">TechCrunch</option>
+                                <option value="verge">The Verge</option>
+                                <option value="wired">WIRED</option>
+                                <option value="engadget">Engadget</option>
+                                <option value="arstechnica">Ars Technica</option>
+                                <option value="hackernews">Hacker News</option>
+                                <option value="bbc_tech">BBC Tech</option>
+                                <option value="nyt_tech">NYT Tech</option>
+                                <option value="bloomberg_tech">Bloomberg Tech</option>
+                            </optgroup>
+                            <optgroup label="Бизнес">
+                                <option value="forbes">Forbes</option>
+                                <option value="bbc_business">BBC Business</option>
+                                <option value="axios">Axios</option>
+                            </optgroup>
+                            <optgroup label="Мир">
+                                <option value="nyt_world">NYT World</option>
+                                <option value="reddit_news">Reddit World News</option>
+                                <option value="politico">Politico</option>
+                            </optgroup>
+                            <optgroup label="Наука">
+                                <option value="sciencedaily">Science Daily</option>
+                                <option value="nature">Nature</option>
+                                <option value="phys">Phys.org</option>
+                                <option value="space">Space.com</option>
+                            </optgroup>
+                            <optgroup label="Культура">
+                                <option value="atlantic">The Atlantic</option>
+                                <option value="newyorker">The New Yorker</option>
+                            </optgroup>
+                            <optgroup label="Спорт">
+                                <option value="espn">ESPN</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                    <div class="col-12 col-lg-6">
+                        <label for="topic-input" class="form-label">Ключевые слова</label>
+                        <input type="text" class="form-control" id="topic-input" placeholder="Поиск по заголовкам, описаниям и источникам...">
+                    </div>
+                    <div class="col-12 col-lg-2">
+                        <button class="btn-search" id="search-button" type="submit">Искать</button>
+                        <button class="btn-refresh" id="refresh-button" type="button">Обновить</button>
+                    </div>
+                    <div class="toggles-container">
+                        <label class="toggle">
+                            <input type="checkbox" id="translate-toggle" checked>
+                            <span class="toggle__indicator"></span>
+                            <span class="toggle__label">Перевод на русский</span>
+                        </label>
+                        <label class="toggle">
+                            <input type="checkbox" id="view-all-toggle">
+                            <span class="toggle__indicator"></span>
+                            <span class="toggle__label">Показать все новости</span>
+                        </label>
+                    </div>
+                    <div class="col-12">
+                        <p class="search-hint text-muted mb-0">Введите несколько слов — мы найдем материалы, где встречается хотя бы одно из них, и отсортируем по свежести.</p>
+                    </div>
+                </form>
+            </section>
+
+            <section class="news-section">
+                <div id="search-feedback" class="search-feedback"></div>
+                <div id="loading-indicator" class="loading-indicator d-none" aria-live="polite">
+                    <div class="spinner-border" role="status" aria-hidden="true"></div>
+                    <span class="loading-text">Загружаем свежие новости...</span>
+                </div>
+                <div id="news-container">
+                    <!-- News items will be injected here by JavaScript -->
+                </div>
+            </section>
+
+            <footer class="note" style="margin-top: 56px; padding: 18px 0 0; font-size: 0.9rem; color: rgba(42, 31, 20, 0.58); border-top: 1px dashed rgba(42, 31, 20, 0.2);">
+                Источники: BBC, Al Jazeera, The Guardian, CNN, NPR, Reuters, TechCrunch, The Verge, Forbes и другие. Данные обновляются на лету; кэширование используется для ускорения.
+            </footer>
+        </div>
     </main>
 
     <!-- Modal for full news article -->
