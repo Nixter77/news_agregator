@@ -29,7 +29,7 @@ from urllib3.util.retry import Retry
 # ─── Configuration ─────────────────────────────────────────────────────────────
 TARGET_LANG = os.environ.get("NEWS_TARGET_LANG", "ru")
 CACHE_TTL = int(os.environ.get("NEWS_CACHE_TTL", 15 * 60))  # seconds
-ITEMS_PER_SOURCE = int(os.environ.get("NEWS_ITEMS_PER_SOURCE", 20))
+ITEMS_PER_SOURCE = int(os.environ.get("NEWS_ITEMS_PER_SOURCE", 50))
 CACHE_DIR = pathlib.Path(os.environ.get("NEWS_CACHE_DIR", "/tmp/rss_cache"))
 CACHE_DIR.mkdir(exist_ok=True)
 
@@ -44,6 +44,12 @@ NEWS_SOURCES: Dict[str, str] = {
     "Associated Press": "https://apnews.com/hub/ap-top-news?outputType=rss",
     "Deutsche Welle": "https://rss.dw.com/rdf/rss-en-all",
     "Sky News": "https://feeds.skynews.com/feeds/rss/world.xml",
+    "France 24": "https://www.france24.com/en/rss",
+    "The New York Times": "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
+    "TASS": "https://tass.com/rss/v2.xml",
+    "The Moscow Times": "https://www.themoscowtimes.com/rss/news",
+    "CBC": "https://www.cbc.ca/cmlink/rss-topstories",
+    "The Japan Times": "https://www.japantimes.co.jp/feed/",
 }
 
 ACCENT_COLORS = [
