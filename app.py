@@ -9,6 +9,7 @@ import pathlib
 import re
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -263,30 +264,26 @@ class NewsCache:
         self._search_cache.clear()
 
     def refresh(self) -> None:
-        aggregated: List[NewsItem] = []
-        seen_links = set()
-        for source, url in NEWS_SOURCES.items():
+        def _fetch_one_feed(feed_info: Tuple[str, str]) -> List[NewsItem]:
+            source, url = feed_info
             feed_bytes = load_raw_rss(url)
             if not feed_bytes:
-                continue
+                return []
             parsed = feedparser.parse(feed_bytes)
             entries = parsed.entries[:ITEMS_PER_SOURCE]
+            items: List[NewsItem] = []
             for entry in entries:
                 link = getattr(entry, "link", "").split("?", 1)[0]
-                if not link or link in seen_links:
+                if not link:
                     continue
-                seen_links.add(link)
-
                 original_title = getattr(entry, "title", "")
                 raw_summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
                 original_description = clean_html(raw_summary)
-
                 published = datetime.now(timezone.utc)
                 if getattr(entry, "published_parsed", None):
                     published = datetime.fromtimestamp(
                         time.mktime(entry.published_parsed), tz=timezone.utc
                     )
-
                 item = NewsItem(
                     title=original_title,
                     description=original_description,
@@ -298,8 +295,27 @@ class NewsCache:
                     orig_description=original_description,
                     accent=_select_accent(link or source),
                 )
+                items.append(item)
+            return items
+
+        with ThreadPoolExecutor() as executor:
+            results = list(executor.map(_fetch_one_feed, NEWS_SOURCES.items()))
+
+        aggregated: List[NewsItem] = []
+        seen_links = set()
+
+        # Flatten the list of lists
+        all_items = [item for sublist in results for item in sublist]
+
+        # Sort by date before deduplicating to keep the most recent ones if any source has duplicates
+        all_items.sort(key=lambda x: x.published, reverse=True)
+
+        for item in all_items:
+            if item.link not in seen_links:
                 aggregated.append(item)
-        aggregated.sort(key=lambda x: x.published, reverse=True)
+                seen_links.add(item.link)
+
+        # The list is already sorted by date
         self.items = aggregated
         self.timestamp = time.time()
         self._rebuild_index()
