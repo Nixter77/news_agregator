@@ -44,6 +44,12 @@ NEWS_SOURCES: Dict[str, str] = {
     "Associated Press": "https://apnews.com/hub/ap-top-news?outputType=rss",
     "Deutsche Welle": "https://rss.dw.com/rdf/rss-en-all",
     "Sky News": "https://feeds.skynews.com/feeds/rss/world.xml",
+    "France 24": "https://www.france24.com/en/rss",
+    "The New York Times": "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
+    "TASS": "https://tass.com/rss/v2.xml",
+    "The Moscow Times": "https://www.themoscowtimes.com/rss/news",
+    "CBC": "https://www.cbc.ca/cmlink/rss-topstories",
+    "The Japan Times": "https://www.japantimes.co.jp/feed/",
 }
 
 ACCENT_COLORS = [
