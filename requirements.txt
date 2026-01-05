@@ -6,3 +6,6 @@ feedparser
 beautifulsoup4
 deep-translator
 pillow
+httpx
+pytest
+pytest-asyncio
