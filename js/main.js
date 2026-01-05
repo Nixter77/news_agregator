@@ -132,7 +132,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } else {
         searchFeedback.textContent = 'Пока свежих новостей нет. Попробуйте выбрать конкретный источник или обновите позже.';
       }
-      document.title = 'Новости в плакатах';
+      document.title = 'Новостной Агрегатор';
       return;
     }
 
@@ -149,7 +149,7 @@ document.addEventListener('DOMContentLoaded', () => {
       messageParts.push(`по запросу «${query}»`);
     }
     searchFeedback.textContent = `${messageParts.join(' ')}.`;
-    document.title = query ? `«${query}» — результаты поиска · Новости в плакатах` : 'Новости в плакатах';
+    document.title = query ? `«${query}» — Новостной Агрегатор` : 'Новостной Агрегатор';
 
     const fragment = document.createDocumentFragment();
     articles.forEach(article => {
