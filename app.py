@@ -19,7 +19,7 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 from deep_translator import GoogleTranslator
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from PIL import Image, ImageDraw, ImageFont
@@ -223,8 +223,8 @@ class NewsItem:
     orig_title: str
     orig_description: str
     accent: str
+    uid: str
     search_tokens: set[str] = field(default_factory=set, init=False, repr=False)
-    _pictograms: Dict[Tuple[str, str], str] = field(default_factory=dict, init=False, repr=False)
     _translations: Dict[str, Tuple[str, str]] = field(default_factory=dict, init=False, repr=False)
 
     def update_search_tokens(self) -> None:
@@ -246,12 +246,6 @@ class NewsItem:
             self._translations[target_lang] = (translated_title, translated_desc)
         return self._translations[target_lang]
 
-    def pictogram(self, title_text: str, summary_text: str) -> str:
-        key = (title_text, summary_text)
-        if key not in self._pictograms:
-            self._pictograms[key] = create_pictogram(title_text, summary_text, self.accent, self.image)
-        return self._pictograms[key]
-
 
 class NewsCache:
     def __init__(self) -> None:
@@ -259,14 +253,20 @@ class NewsCache:
         self.items: List[NewsItem] = []
         self._token_index: Dict[str, set[int]] = {}
         self._search_cache: Dict[Tuple[str, ...], List[int]] = {}
+        self._uid_map: Dict[str, NewsItem] = {}
 
     def _rebuild_index(self) -> None:
         self._token_index = {}
+        self._uid_map = {}
         for idx, item in enumerate(self.items):
             if not item.search_tokens:
                 item.update_search_tokens()
             for token in item.search_tokens:
                 self._token_index.setdefault(token, set()).add(idx)
+
+            if item.uid:
+                self._uid_map[item.uid] = item
+
         self._search_cache.clear()
 
     def refresh(self) -> None:
@@ -290,6 +290,10 @@ class NewsCache:
                     published = datetime.fromtimestamp(
                         time.mktime(entry.published_parsed), tz=timezone.utc
                     )
+
+                # Generate a stable UID for the item
+                uid = hashlib.md5(link.encode()).hexdigest()
+
                 item = NewsItem(
                     title=original_title,
                     description=original_description,
@@ -300,6 +304,7 @@ class NewsCache:
                     orig_title=original_title,
                     orig_description=original_description,
                     accent=_select_accent(link or source),
+                    uid=uid,
                 )
                 items.append(item)
             return items
@@ -330,6 +335,12 @@ class NewsCache:
         if not self.items or (time.time() - self.timestamp) > CACHE_TTL:
             self.refresh()
         return self.items
+
+    def get_item_by_uid(self, uid: str) -> Optional[NewsItem]:
+        # Ensure we have items populated
+        if not self.items:
+            self.get_items()
+        return self._uid_map.get(uid)
 
     def search(self, query: str, items: Optional[List[NewsItem]] = None) -> List[NewsItem]:
         if items is None:
@@ -403,16 +414,16 @@ def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[s
     return lines
 
 
-def create_pictogram(title: str, summary: str, accent: str, image_url: Optional[str] = None) -> str:
+def create_pictogram_bytes(title: str, summary: str, accent: str, image_url: Optional[str] = None) -> bytes:
     key = (title, summary, accent, image_url or "")
-    return _create_pictogram_cached(key)
+    return _generate_pictogram_bytes(key)
 
 
 @lru_cache(maxsize=128)
-def _create_pictogram_cached(key: Tuple[str, str, str, str]) -> str:
+def _generate_pictogram_bytes(key: Tuple[str, str, str, str]) -> bytes:
     title, summary, accent, image_url = key
     """Create a pictogram image and optionally embed the original image (image_url) into the left accent panel.
-    Returns base64-encoded PNG bytes as string.
+    Returns PNG bytes.
     """
     width, height = 720, 360
     base = Image.new("RGB", (width, height), "#f4f1de")
@@ -478,7 +489,7 @@ def _create_pictogram_cached(key: Tuple[str, str, str, str]) -> str:
 
     buffer = io.BytesIO()
     base.save(buffer, format="PNG", optimize=True)
-    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+    return buffer.getvalue()
 
 
 # ─── Presentation Helpers ──────────────────────────────────────────────────────
@@ -511,7 +522,11 @@ def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> L
 
         title_display = translated_title or item.orig_title
         summary_display = translated_desc or item.orig_description or title_display
-        pictogram = item.pictogram(title_display, summary_display)
+
+        # Use URL for pictogram instead of base64
+        lang_param = "on" if translate_enabled else "off"
+        pictogram_url = f"/pictogram/{item.uid}?translate={lang_param}"
+
         view_models.append(
             {
                 "title_display": title_display,
@@ -523,7 +538,7 @@ def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> L
                 "source": item.source,
                 "time": format_datetime(item.published),
                 "relative_time": humanize_delta(item.published),
-                "pictogram": pictogram,
+                "pictogram": pictogram_url,
                 "accent": item.accent,
             }
         )
@@ -602,6 +617,26 @@ def index(
         all_news=all_news,
     )
     return HTMLResponse(rendered)
+
+
+@app.get("/pictogram/{uid}")
+def get_pictogram(uid: str, translate: str = "off"):
+    item = NEWS_CACHE.get_item_by_uid(uid)
+    if not item:
+        # If item not found (e.g. cache expired/restarted), return 404
+        return Response(status_code=404)
+
+    translate_enabled = (translate == "on")
+    if translate_enabled:
+        title, desc = item.translated()
+    else:
+        title, desc = item.orig_title, item.orig_description
+
+    title_display = title or item.orig_title
+    summary_display = desc or item.orig_description or title_display
+
+    img_bytes = create_pictogram_bytes(title_display, summary_display, item.accent, item.image)
+    return Response(content=img_bytes, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
 
 
 @app.get("/health", response_class=HTMLResponse)
