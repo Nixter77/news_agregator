@@ -502,8 +502,7 @@ def humanize_delta(dt: datetime) -> str:
 
 
 def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> List[dict]:
-    view_models = []
-    for item in items:
+    def process_item(item: NewsItem) -> dict:
         if translate_enabled:
             translated_title, translated_desc = item.translated()
         else:
@@ -512,21 +511,25 @@ def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> L
         title_display = translated_title or item.orig_title
         summary_display = translated_desc or item.orig_description or title_display
         pictogram = item.pictogram(title_display, summary_display)
-        view_models.append(
-            {
-                "title_display": title_display,
-                "summary_display": summary_display,
-                "orig_title": item.orig_title,
-                "orig_desc": item.orig_description,
-                "link": item.link,
-                "image": item.image,
-                "source": item.source,
-                "time": format_datetime(item.published),
-                "relative_time": humanize_delta(item.published),
-                "pictogram": pictogram,
-                "accent": item.accent,
-            }
-        )
+        return {
+            "title_display": title_display,
+            "summary_display": summary_display,
+            "orig_title": item.orig_title,
+            "orig_desc": item.orig_description,
+            "link": item.link,
+            "image": item.image,
+            "source": item.source,
+            "time": format_datetime(item.published),
+            "relative_time": humanize_delta(item.published),
+            "pictogram": pictogram,
+            "accent": item.accent,
+        }
+
+    # Parallelize the processing of items to speed up translation and image generation
+    # which involve network requests (for translation and image fetching).
+    with ThreadPoolExecutor() as executor:
+        view_models = list(executor.map(process_item, items))
+
     return view_models
 
 
