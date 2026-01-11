@@ -501,31 +501,34 @@ def humanize_delta(dt: datetime) -> str:
     return f"{days} дн назад"
 
 
-def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> List[dict]:
-    view_models = []
-    for item in items:
-        if translate_enabled:
-            translated_title, translated_desc = item.translated()
-        else:
-            translated_title, translated_desc = item.orig_title, item.orig_description
+def _process_view_model(item: NewsItem, translate_enabled: bool) -> dict:
+    if translate_enabled:
+        translated_title, translated_desc = item.translated()
+    else:
+        translated_title, translated_desc = item.orig_title, item.orig_description
 
-        title_display = translated_title or item.orig_title
-        summary_display = translated_desc or item.orig_description or title_display
-        pictogram = item.pictogram(title_display, summary_display)
-        view_models.append(
-            {
-                "title_display": title_display,
-                "summary_display": summary_display,
-                "orig_title": item.orig_title,
-                "orig_desc": item.orig_description,
-                "link": item.link,
-                "image": item.image,
-                "source": item.source,
-                "time": format_datetime(item.published),
-                "relative_time": humanize_delta(item.published),
-                "pictogram": pictogram,
-                "accent": item.accent,
-            }
+    title_display = translated_title or item.orig_title
+    summary_display = translated_desc or item.orig_description or title_display
+    pictogram = item.pictogram(title_display, summary_display)
+    return {
+        "title_display": title_display,
+        "summary_display": summary_display,
+        "orig_title": item.orig_title,
+        "orig_desc": item.orig_description,
+        "link": item.link,
+        "image": item.image,
+        "source": item.source,
+        "time": format_datetime(item.published),
+        "relative_time": humanize_delta(item.published),
+        "pictogram": pictogram,
+        "accent": item.accent,
+    }
+
+
+def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> List[dict]:
+    with ThreadPoolExecutor() as executor:
+        view_models = list(
+            executor.map(lambda item: _process_view_model(item, translate_enabled), items)
         )
     return view_models
 
