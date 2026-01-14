@@ -482,6 +482,9 @@ def _create_pictogram_cached(key: Tuple[str, str, str, str]) -> str:
 
 
 # ─── Presentation Helpers ──────────────────────────────────────────────────────
+VIEW_MODEL_EXECUTOR = ThreadPoolExecutor(max_workers=10)
+
+
 def format_datetime(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
 
@@ -501,33 +504,41 @@ def humanize_delta(dt: datetime) -> str:
     return f"{days} дн назад"
 
 
-def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> List[dict]:
-    view_models = []
-    for item in items:
-        if translate_enabled:
-            translated_title, translated_desc = item.translated()
-        else:
-            translated_title, translated_desc = item.orig_title, item.orig_description
+def _process_view_model_item(item: NewsItem, translate_enabled: bool) -> dict:
+    if translate_enabled:
+        translated_title, translated_desc = item.translated()
+    else:
+        translated_title, translated_desc = item.orig_title, item.orig_description
 
-        title_display = translated_title or item.orig_title
-        summary_display = translated_desc or item.orig_description or title_display
-        pictogram = item.pictogram(title_display, summary_display)
-        view_models.append(
-            {
-                "title_display": title_display,
-                "summary_display": summary_display,
-                "orig_title": item.orig_title,
-                "orig_desc": item.orig_description,
-                "link": item.link,
-                "image": item.image,
-                "source": item.source,
-                "time": format_datetime(item.published),
-                "relative_time": humanize_delta(item.published),
-                "pictogram": pictogram,
-                "accent": item.accent,
-            }
-        )
-    return view_models
+    title_display = translated_title or item.orig_title
+    summary_display = translated_desc or item.orig_description or title_display
+    pictogram = item.pictogram(title_display, summary_display)
+
+    return {
+        "title_display": title_display,
+        "summary_display": summary_display,
+        "orig_title": item.orig_title,
+        "orig_desc": item.orig_description,
+        "link": item.link,
+        "image": item.image,
+        "source": item.source,
+        "time": format_datetime(item.published),
+        "relative_time": humanize_delta(item.published),
+        "pictogram": pictogram,
+        "accent": item.accent,
+    }
+
+
+def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> List[dict]:
+    """Prepares view models in parallel using a thread pool."""
+    items_list = list(items)
+    if not items_list:
+        return []
+
+    return list(VIEW_MODEL_EXECUTOR.map(
+        lambda item: _process_view_model_item(item, translate_enabled),
+        items_list
+    ))
 
 
 # ─── FastAPI App ───────────────────────────────────────────────────────────────
