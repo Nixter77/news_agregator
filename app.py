@@ -12,7 +12,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import feedparser
@@ -100,6 +100,8 @@ CYRILLIC_TO_LATIN = {
 }
 
 # ─── HTTP Session ─────────────────────────────────────────────────────────────
+
+
 def _build_session() -> requests.Session:
     session = requests.Session()
     retry = Retry(total=3, backoff_factor=1, status_forcelist=(429, 500, 502, 503, 504))
@@ -116,6 +118,7 @@ def _build_session() -> requests.Session:
         }
     )
     return session
+
 
 SESSION = _build_session()
 
@@ -249,7 +252,9 @@ class NewsItem:
     def pictogram(self, title_text: str, summary_text: str) -> str:
         key = (title_text, summary_text)
         if key not in self._pictograms:
-            self._pictograms[key] = create_pictogram(title_text, summary_text, self.accent, self.image)
+            self._pictograms[key] = create_pictogram(
+                title_text, summary_text, self.accent, self.image
+            )
         return self._pictograms[key]
 
 
@@ -283,7 +288,9 @@ class NewsCache:
                 if not link:
                     continue
                 original_title = getattr(entry, "title", "")
-                raw_summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
+                raw_summary = getattr(entry, "summary", "") or getattr(
+                    entry, "description", ""
+                )
                 original_description = clean_html(raw_summary)
                 published = datetime.now(timezone.utc)
                 if getattr(entry, "published_parsed", None):
@@ -313,7 +320,8 @@ class NewsCache:
         # Flatten the list of lists
         all_items = [item for sublist in results for item in sublist]
 
-        # Sort by date before deduplicating to keep the most recent ones if any source has duplicates
+        # Sort by date before deduplicating to keep the most recent ones if any source
+        # has duplicates
         all_items.sort(key=lambda x: x.published, reverse=True)
 
         for item in all_items:
@@ -372,6 +380,8 @@ class NewsCache:
 NEWS_CACHE = NewsCache()
 
 # ─── Pictogram Rendering ───────────────────────────────────────────────────────
+
+
 def _measure_text(font: ImageFont.FreeTypeFont, text: str) -> float:
     if hasattr(font, "getlength"):
         return font.getlength(text)
@@ -411,8 +421,8 @@ def create_pictogram(title: str, summary: str, accent: str, image_url: Optional[
 @lru_cache(maxsize=128)
 def _create_pictogram_cached(key: Tuple[str, str, str, str]) -> str:
     title, summary, accent, image_url = key
-    """Create a pictogram image and optionally embed the original image (image_url) into the left accent panel.
-    Returns base64-encoded PNG bytes as string.
+    """Create a pictogram image and optionally embed the original image (image_url)
+    into the left accent panel. Returns base64-encoded PNG bytes as string.
     """
     width, height = 720, 360
     base = Image.new("RGB", (width, height), "#f4f1de")
@@ -501,32 +511,35 @@ def humanize_delta(dt: datetime) -> str:
     return f"{days} дн назад"
 
 
-def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> List[dict]:
-    view_models = []
-    for item in items:
-        if translate_enabled:
-            translated_title, translated_desc = item.translated()
-        else:
-            translated_title, translated_desc = item.orig_title, item.orig_description
+def _process_view_model_item(item: NewsItem, translate_enabled: bool) -> dict:
+    if translate_enabled:
+        translated_title, translated_desc = item.translated()
+    else:
+        translated_title, translated_desc = item.orig_title, item.orig_description
 
-        title_display = translated_title or item.orig_title
-        summary_display = translated_desc or item.orig_description or title_display
-        pictogram = item.pictogram(title_display, summary_display)
-        view_models.append(
-            {
-                "title_display": title_display,
-                "summary_display": summary_display,
-                "orig_title": item.orig_title,
-                "orig_desc": item.orig_description,
-                "link": item.link,
-                "image": item.image,
-                "source": item.source,
-                "time": format_datetime(item.published),
-                "relative_time": humanize_delta(item.published),
-                "pictogram": pictogram,
-                "accent": item.accent,
-            }
-        )
+    title_display = translated_title or item.orig_title
+    summary_display = translated_desc or item.orig_description or title_display
+    pictogram = item.pictogram(title_display, summary_display)
+    return {
+        "title_display": title_display,
+        "summary_display": summary_display,
+        "orig_title": item.orig_title,
+        "orig_desc": item.orig_description,
+        "link": item.link,
+        "image": item.image,
+        "source": item.source,
+        "time": format_datetime(item.published),
+        "relative_time": humanize_delta(item.published),
+        "pictogram": pictogram,
+        "accent": item.accent,
+    }
+
+
+def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> List[dict]:
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        process_func = partial(_process_view_model_item, translate_enabled=translate_enabled)
+        # Convert items to list if it's an iterable to ensure map works correctly
+        view_models = list(executor.map(process_func, list(items)))
     return view_models
 
 
