@@ -12,7 +12,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import feedparser
@@ -30,6 +30,7 @@ from urllib3.util.retry import Retry
 TARGET_LANG = os.environ.get("NEWS_TARGET_LANG", "ru")
 CACHE_TTL = int(os.environ.get("NEWS_CACHE_TTL", 15 * 60))  # seconds
 ITEMS_PER_SOURCE = int(os.environ.get("NEWS_ITEMS_PER_SOURCE", 50))
+VIEW_MODEL_WORKERS = int(os.environ.get("NEWS_VIEW_MODEL_WORKERS", 10))
 CACHE_DIR = pathlib.Path(os.environ.get("NEWS_CACHE_DIR", "/tmp/rss_cache"))
 CACHE_DIR.mkdir(exist_ok=True)
 
@@ -501,33 +502,39 @@ def humanize_delta(dt: datetime) -> str:
     return f"{days} дн назад"
 
 
-def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> List[dict]:
-    view_models = []
-    for item in items:
-        if translate_enabled:
-            translated_title, translated_desc = item.translated()
-        else:
-            translated_title, translated_desc = item.orig_title, item.orig_description
+def _process_view_model_item(item: NewsItem, translate_enabled: bool) -> dict:
+    if translate_enabled:
+        translated_title, translated_desc = item.translated()
+    else:
+        translated_title, translated_desc = item.orig_title, item.orig_description
 
-        title_display = translated_title or item.orig_title
-        summary_display = translated_desc or item.orig_description or title_display
-        pictogram = item.pictogram(title_display, summary_display)
-        view_models.append(
-            {
-                "title_display": title_display,
-                "summary_display": summary_display,
-                "orig_title": item.orig_title,
-                "orig_desc": item.orig_description,
-                "link": item.link,
-                "image": item.image,
-                "source": item.source,
-                "time": format_datetime(item.published),
-                "relative_time": humanize_delta(item.published),
-                "pictogram": pictogram,
-                "accent": item.accent,
-            }
-        )
-    return view_models
+    title_display = translated_title or item.orig_title
+    summary_display = translated_desc or item.orig_description or title_display
+    pictogram = item.pictogram(title_display, summary_display)
+
+    return {
+        "title_display": title_display,
+        "summary_display": summary_display,
+        "orig_title": item.orig_title,
+        "orig_desc": item.orig_description,
+        "link": item.link,
+        "image": item.image,
+        "source": item.source,
+        "time": format_datetime(item.published),
+        "relative_time": humanize_delta(item.published),
+        "pictogram": pictogram,
+        "accent": item.accent,
+    }
+
+
+def prepare_view_models(items: Iterable[NewsItem], translate_enabled: bool) -> List[dict]:
+    # Use a ThreadPoolExecutor to process items in parallel.
+    # This significantly reduces response time because item.translated() (network I/O)
+    # and item.pictogram() (image processing + potential network I/O) are expensive
+    # and can be performed concurrently.
+    func = partial(_process_view_model_item, translate_enabled=translate_enabled)
+    with ThreadPoolExecutor(max_workers=VIEW_MODEL_WORKERS) as executor:
+        return list(executor.map(func, items))
 
 
 # ─── FastAPI App ───────────────────────────────────────────────────────────────
