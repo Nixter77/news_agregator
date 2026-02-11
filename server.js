@@ -1,66 +1,56 @@
+/**
+ * Modernized Backend Server for News Aggregator
+ *
+ * Architecture:
+ * - Service-based design (CacheService, TranslationService, RSSService)
+ * - Dependency Injection principles
+ * - Centralized Configuration
+ * - Robust Error Handling
+ */
+
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const dotenv = require('dotenv');
 const path = require('path');
 const xml2js = require('xml2js');
+const { EventEmitter } = require('events');
 
+// Load environment variables
 dotenv.config();
 
-const app = express();
-
-// CORS with restrictions
-app.use(cors({
-  origin: process.env.ALLOWED_ORIGIN || '*',
-  methods: ['GET', 'POST'],
-  maxAge: 86400
-}));
-
-app.use(express.json({ limit: '10kb' }));
-
-// Simple rate limiting
-const rateLimitMap = new Map();
-const RATE_LIMIT_WINDOW = 60000; // 1 minute
-const RATE_LIMIT_MAX = 60; // requests per window
-
-function rateLimit(req, res, next) {
-  const ip = req.ip || req.connection.remoteAddress;
-  const now = Date.now();
-  const record = rateLimitMap.get(ip);
-
-  if (!record || now - record.start > RATE_LIMIT_WINDOW) {
-    rateLimitMap.set(ip, { start: now, count: 1 });
-    return next();
+/**
+ * Configuration Constants
+ */
+const CONFIG = {
+  PORT: process.env.PORT || 3000,
+  ALLOWED_ORIGIN: process.env.ALLOWED_ORIGIN || '*',
+  CACHE: {
+    RSS_TTL: 5 * 60 * 1000, // 5 minutes
+    TRANSLATION_TTL: 24 * 60 * 60 * 1000, // 24 hours
+    RSS_LIMIT: 100,
+    TRANSLATION_LIMIT: 1000,
+  },
+  FETCH: {
+    TIMEOUT: 10000, // 10 seconds
+    MAX_CONCURRENT_TRANSLATIONS: 5,
+    MAX_CONCURRENT_FEEDS: 10,
+  },
+  RATE_LIMIT: {
+    WINDOW_MS: 60 * 1000, // 1 minute
+    MAX_REQUESTS: 60,
+  },
+  SEARCH: {
+    MAX_QUERY_LENGTH: 500,
+    MAX_RESULTS_VIEW_ALL: 100,
+    MAX_RESULTS_DEFAULT: 30,
   }
+};
 
-  if (record.count >= RATE_LIMIT_MAX) {
-    return res.status(429).json({ ok: false, error: 'Too many requests. Please try again later.' });
-  }
-
-  record.count++;
-  next();
-}
-
-app.use('/api/', rateLimit);
-
-// Serve static frontend
-app.use(express.static(path.join(__dirname)));
-
-// --- Constants & simple in-memory caches ---
-const RSS_CACHE_MS = 5 * 60 * 1000; // 5 minutes
-const TRANSLATION_CACHE_MS = 24 * 60 * 60 * 1000; // 24 hours
-const RSS_CACHE_LIMIT = 60;
-const TRANSLATION_CACHE_LIMIT = 600;
-const FETCH_TIMEOUT_MS = 10000; // 10 seconds
-const MAX_QUERY_LENGTH = 500;
-const MAX_CONCURRENT_TRANSLATIONS = 5;
-
-const rssCache = new Map();
-const translationCache = new Map();
-const pendingFetches = new Map(); // Deduplication for concurrent requests
-
-// --- Updated RSS feeds (verified working feeds) ---
-const rssFeeds = {
+/**
+ * Validated RSS Feeds
+ */
+const RSS_FEEDS = {
   bbc: 'https://feeds.bbci.co.uk/news/rss.xml',
   nyt: 'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml',
   guardian: 'https://www.theguardian.com/world/rss',
@@ -92,7 +82,7 @@ const rssFeeds = {
   espn: 'https://www.espn.com/espn/rss/news'
 };
 
-const feedTitles = {
+const FEED_TITLES = {
   bbc: 'BBC News',
   nyt: 'The New York Times',
   guardian: 'The Guardian',
@@ -124,473 +114,453 @@ const feedTitles = {
   espn: 'ESPN'
 };
 
-// --- Helpers ---
-function pruneCache(map, limit) {
-  if (map.size <= limit) return;
-  const iterator = map.keys();
-  while (map.size > limit) {
-    const key = iterator.next().value;
-    if (key === undefined) break;
-    map.delete(key);
+/**
+ * Utility: LRU Cache Implementation
+ * Optimized for O(1) access and eviction using JS Map iteration order.
+ */
+class LRUCache {
+  constructor(limit, ttlFn = null) {
+    this.limit = limit;
+    this.ttlFn = ttlFn; // Optional function to calculate TTL per item or global TTL logic
+    this.cache = new Map();
   }
-}
 
-// Periodic cache cleanup
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, value] of rssCache.entries()) {
-    if (value.expires < now) rssCache.delete(key);
-  }
-  for (const [key, value] of translationCache.entries()) {
-    if (value.expires < now) translationCache.delete(key);
-  }
-  rateLimitMap.clear();
-}, 5 * 60 * 1000);
+  get(key) {
+    if (!this.cache.has(key)) return null;
+    const item = this.cache.get(key);
 
-function stripHtml(input = '') {
-  return input.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function extractText(value) {
-  if (!value) return '';
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return extractText(value[0]);
-  if (typeof value === 'object') {
-    if ('_' in value) return extractText(value._);
-    if ('$' in value && typeof value.$.href === 'string') return value.$.href;
-    if (typeof value.href === 'string') return value.href;
-  }
-  return '';
-}
-
-function extractLink(item) {
-  if (!item.link) return '';
-  if (typeof item.link === 'string') return item.link;
-  if (Array.isArray(item.link)) {
-    for (const entry of item.link) {
-      const url = extractLink({ link: entry });
-      if (url) return url;
+    // Check expiration
+    if (item.expires && item.expires < Date.now()) {
+      this.cache.delete(key);
+      return null;
     }
-    return '';
-  }
-  if (typeof item.link === 'object') {
-    if (typeof item.link.href === 'string') return item.link.href;
-    if (item.link.$ && typeof item.link.$.href === 'string') return item.link.$.href;
-    if (typeof item.link._ === 'string') return item.link._;
-  }
-  return '';
-}
 
-function extractImage(item) {
-  const mediaGroup = item['media:group'];
-  if (mediaGroup) {
-    const mediaContent = mediaGroup['media:content'] || mediaGroup['media:thumbnail'];
-    if (mediaContent) {
-      const entry = Array.isArray(mediaContent) ? mediaContent[0] : mediaContent;
-      if (entry) {
-        return entry.url || (entry.$ && entry.$.url) || null;
+    // Refresh LRU position: delete and re-insert
+    this.cache.delete(key);
+    this.cache.set(key, item);
+    return item.value;
+  }
+
+  set(key, value, ttl = 0) {
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    } else if (this.cache.size >= this.limit) {
+      // Evict oldest (first inserted)
+      const oldestKey = this.cache.keys().next().value;
+      this.cache.delete(oldestKey);
+    }
+
+    const expires = ttl > 0 ? Date.now() + ttl : (this.ttlFn ? Date.now() + this.ttlFn() : 0);
+    this.cache.set(key, { value, expires });
+  }
+
+  clear() {
+    this.cache.clear();
+  }
+
+  get size() {
+    return this.cache.size;
+  }
+
+  // Periodic cleanup for expired items without access
+  pruneExpired() {
+    const now = Date.now();
+    for (const [key, item] of this.cache.entries()) {
+      if (item.expires && item.expires < now) {
+        this.cache.delete(key);
       }
     }
   }
+}
 
-  const mediaContent = item['media:content'] || item['media:thumbnail'];
-  if (mediaContent) {
-    const entry = Array.isArray(mediaContent) ? mediaContent[0] : mediaContent;
-    if (entry) {
-      return entry.url || (entry.$ && entry.$.url) || null;
-    }
+/**
+ * Utility: Rate Limiter Middleware
+ */
+class RateLimiter {
+  constructor(windowMs, max) {
+    this.windowMs = windowMs;
+    this.max = max;
+    this.hits = new Map();
+
+    // Auto-cleanup every windowMs
+    setInterval(() => this.hits.clear(), windowMs);
   }
 
-  const enclosure = item.enclosure;
-  if (enclosure) {
-    const entry = Array.isArray(enclosure) ? enclosure[0] : enclosure;
-    if (entry) {
-      return entry.url || (entry.$ && entry.$.url) || null;
-    }
+  middleware() {
+    return (req, res, next) => {
+      const ip = req.ip || req.connection.remoteAddress;
+      const record = this.hits.get(ip) || { count: 0, startTime: Date.now() };
+
+      if (Date.now() - record.startTime > this.windowMs) {
+        record.count = 1;
+        record.startTime = Date.now();
+      } else {
+        record.count++;
+      }
+
+      this.hits.set(ip, record);
+
+      if (record.count > this.max) {
+        return res.status(429).json({
+          ok: false,
+          error: 'Too many requests. Please try again later.'
+        });
+      }
+      next();
+    };
+  }
+}
+
+/**
+ * Service: Translation Logic
+ */
+class TranslationService {
+  constructor(cache) {
+    this.cache = cache;
+    this.queue = [];
+    this.activeWorkers = 0;
+    this.maxWorkers = CONFIG.FETCH.MAX_CONCURRENT_TRANSLATIONS;
   }
 
-  return null;
-}
+  async translate(text, targetLang = 'ru') {
+    if (!text) return '';
+    const cacheKey = `${targetLang}|${text}`;
 
-function parseDate(dateString) {
-  if (!dateString) return null;
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return null;
-  return date;
-}
+    const cached = this.cache.get(cacheKey);
+    if (cached) return cached;
 
-function tokenize(query) {
-  return query
-    .toLowerCase()
-    .split(/[\s,.;:!?"'()\[\]{}<>/@#%^&*+=|~`]+/)
-    .map(token => token.trim())
-    .filter(token => token.length >= 2); // Минимальная длина токена 2 символа
-}
-
-function buildSearchTokens(originalQuery, translatedQuery) {
-  const tokens = new Set();
-  tokenize(originalQuery).forEach(token => tokens.add(token));
-  tokenize(translatedQuery).forEach(token => tokens.add(token));
-  return Array.from(tokens);
-}
-
-// Fetch with timeout using AbortController
-async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal
+    return new Promise((resolve, reject) => {
+      this.queue.push({ text, targetLang, resolve, reject, cacheKey });
+      this.processQueue();
     });
-    return response;
-  } finally {
-    clearTimeout(timeout);
   }
-}
 
-// Rate-limited translation with queue
-const translationQueue = [];
-let activeTranslations = 0;
+  async processQueue() {
+    if (this.queue.length === 0 || this.activeWorkers >= this.maxWorkers) return;
 
-async function processTranslationQueue() {
-  while (translationQueue.length > 0 && activeTranslations < MAX_CONCURRENT_TRANSLATIONS) {
-    const task = translationQueue.shift();
-    if (task) {
-      activeTranslations++;
-      task.execute().finally(() => {
-        activeTranslations--;
-        processTranslationQueue();
-      });
+    const task = this.queue.shift();
+    this.activeWorkers++;
+
+    try {
+      const result = await this._performTranslation(task.text, task.targetLang);
+      this.cache.set(task.cacheKey, result, CONFIG.CACHE.TRANSLATION_TTL);
+      task.resolve(result);
+    } catch (error) {
+      console.error('Translation failed:', error.message);
+      task.resolve(task.text); // Fallback to original text
+    } finally {
+      this.activeWorkers--;
+      this.processQueue();
+    }
+  }
+
+  async _performTranslation(text, targetLang) {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), CONFIG.FETCH.TIMEOUT);
+
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) throw new Error(`Status ${response.status}`);
+
+      const data = await response.json();
+      if (!Array.isArray(data) || !Array.isArray(data[0])) throw new Error('Invalid format');
+
+      return data[0].map(item => (Array.isArray(item) ? item[0] : '')).join('');
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 }
 
-async function translateText(text, { to = 'ru', from = 'auto' } = {}) {
-  if (!text) {
-    return '';
+/**
+ * Service: RSS Fetching and Parsing
+ */
+class RSSService {
+  constructor(cache) {
+    this.cache = cache;
+    this.pendingRequests = new Map();
+    this.xmlParser = new xml2js.Parser({ explicitArray: false, mergeAttrs: true, trim: true });
   }
 
-  const cacheKey = `${from}|${to}|${text}`;
-  const cached = translationCache.get(cacheKey);
-  if (cached && cached.expires > Date.now()) {
-    return cached.value;
-  }
+  async fetchFeed(sourceKey, url) {
+    if (!url) return [];
 
-  return new Promise((resolve) => {
-    const execute = async () => {
+    // Check Cache
+    const cached = this.cache.get(url);
+    if (cached) return cached;
+
+    // Check Pending Request (Request Deduplication)
+    if (this.pendingRequests.has(url)) {
+      return this.pendingRequests.get(url);
+    }
+
+    const fetchPromise = (async () => {
       try {
-        const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${from}&tl=${to}&dt=t&q=${encodeURIComponent(text)}`;
-        const response = await fetchWithTimeout(url, {}, 5000);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), CONFIG.FETCH.TIMEOUT);
 
-        if (!response.ok) {
-          throw new Error(`Translation request failed: ${response.status}`);
-        }
+        const response = await fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+        if (!response.ok) throw new Error(`Status ${response.status}`);
 
-        const data = await response.json();
-        if (!Array.isArray(data) || !Array.isArray(data[0])) {
-          throw new Error('Unexpected translation payload');
-        }
+        const xml = await response.text();
+        const parsed = await this.xmlParser.parseStringPromise(xml);
+        const articles = this._normalizeFeed(sourceKey, parsed);
 
-        const translated = data[0]
-          .map(item => (Array.isArray(item) && item.length > 0 ? item[0] : ''))
-          .join('');
-
-        translationCache.set(cacheKey, { value: translated, expires: Date.now() + TRANSLATION_CACHE_MS });
-        pruneCache(translationCache, TRANSLATION_CACHE_LIMIT);
-
-        resolve(translated);
+        this.cache.set(url, articles, CONFIG.CACHE.RSS_TTL);
+        return articles;
       } catch (error) {
-        console.error('Translation error:', error.message);
-        resolve(text);
+        console.error(`Error fetching feed ${sourceKey}: ${error.message}`);
+        return [];
+      } finally {
+        this.pendingRequests.delete(url);
       }
+    })();
+
+    this.pendingRequests.set(url, fetchPromise);
+    return fetchPromise;
+  }
+
+  _normalizeFeed(sourceKey, parsedData) {
+    let items = [];
+    if (parsedData?.rss?.channel?.item) {
+      items = [].concat(parsedData.rss.channel.item);
+    } else if (parsedData?.feed?.entry) {
+      items = [].concat(parsedData.feed.entry);
+    }
+
+    return items.map((item, idx) => this._normalizeItem(sourceKey, item, idx)).filter(Boolean);
+  }
+
+  _normalizeItem(sourceKey, item, index) {
+    const getText = (val) => {
+        if (!val) return '';
+        if (typeof val === 'string') return val;
+        if (Array.isArray(val)) return getText(val[0]);
+        if (typeof val === 'object') {
+            if (val._) return getText(val._);
+            if (val.$?.href) return val.$.href;
+        }
+        return '';
     };
 
-    translationQueue.push({ execute });
-    processTranslationQueue();
-  });
-}
+    const stripHtml = (str) => str.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 
-async function translateQueryToEnglish(query) {
-  try {
-    return await translateText(query, { to: 'en', from: 'auto' });
-  } catch (error) {
-    console.error('Query translation failed:', error.message);
-    return query;
+    const title = stripHtml(getText(item.title));
+    const description = stripHtml(getText(item.description) || getText(item.summary) || getText(item['media:description']) || getText(item['content:encoded']));
+
+    // Extract Link
+    let link = '';
+    if (typeof item.link === 'string') link = item.link;
+    else if (item.link?.href) link = item.link.href;
+    else if (Array.isArray(item.link)) link = item.link.find(l => l.type === 'text/html' || !l.type)?.href || item.link[0]?.href || '';
+
+    // Extract Image
+    let imageUrl = null;
+    const media = item['media:content'] || item['media:thumbnail'] || item['media:group']?.['media:content'];
+    const enclosure = item.enclosure;
+    const findUrl = (obj) => obj?.url || obj?.$?.url;
+
+    if (Array.isArray(media)) imageUrl = findUrl(media[0]);
+    else if (media) imageUrl = findUrl(media);
+    else if (enclosure) imageUrl = findUrl(Array.isArray(enclosure) ? enclosure[0] : enclosure);
+
+    // Dates
+    const pubDateStr = item.pubDate || item.published || item.updated || item.date;
+    const pubDate = pubDateStr ? new Date(pubDateStr) : null;
+    const publishedAt = pubDate && !isNaN(pubDate) ? pubDate.toISOString() : null;
+    const publishedAtMs = pubDate && !isNaN(pubDate) ? pubDate.getTime() : 0;
+
+    const id = getText(item.guid) || getText(item.id) || link || `${sourceKey}-${publishedAtMs}-${index}`;
+
+    // Full text (truncated)
+    const rawFull = getText(item['content:encoded']) || description || '';
+    const fullText = stripHtml(rawFull).substring(0, 4000); // Limit size
+
+    return {
+      id,
+      source: sourceKey,
+      sourceTitle: FEED_TITLES[sourceKey] || sourceKey,
+      title: title || '(No Title)',
+      snippet: description || '(No Description)',
+      link,
+      imageUrl,
+      fullText: fullText.length > 3 ? fullText : description,
+      publishedAt,
+      publishedAtMs
+    };
   }
 }
 
-async function fetchFeedWithCache(sourceKey, rssUrl) {
-  const cached = rssCache.get(rssUrl);
-  if (cached && cached.expires > Date.now()) {
-    return cached.value;
+/**
+ * Service: Search Logic
+ */
+class SearchService {
+  constructor(rssService, translationService) {
+    this.rssService = rssService;
+    this.translationService = translationService;
   }
 
-  // Deduplication - if there's already a pending fetch for this URL, wait for it
-  if (pendingFetches.has(rssUrl)) {
-    return pendingFetches.get(rssUrl);
-  }
+  async search(query, sourceKey, options = {}) {
+    const { viewAll, refresh } = options;
 
-  const fetchPromise = (async () => {
-    try {
-      const response = await fetchWithTimeout(rssUrl);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch RSS feed (${response.status})`);
+    // Determine sources
+    const sources = sourceKey && RSS_FEEDS[sourceKey] ? [sourceKey] : Object.keys(RSS_FEEDS);
+
+    if (refresh) {
+      this.rssService.cache.clear();
+    }
+
+    // Parallel Fetch with Concurrency Limit could be added here if needed,
+    // currently Promise.all is used but controlled by service logic.
+    const allArticles = (await Promise.all(
+      sources.map(key => this.rssService.fetchFeed(key, RSS_FEEDS[key]))
+    )).flat();
+
+    // Filtering and Scoring
+    let results = allArticles;
+    if (query) {
+      const translatedQuery = await this.translationService.translate(query, 'en');
+      const tokens = this._tokenize(query).concat(this._tokenize(translatedQuery));
+      const uniqueTokens = [...new Set(tokens)];
+
+      if (uniqueTokens.length > 0) {
+        const regexes = uniqueTokens.map(t => new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu'));
+
+        results = allArticles
+          .map(article => ({ article, score: this._score(article, regexes) }))
+          .filter(item => item.score > 0)
+          .sort((a, b) => b.score - a.score || b.article.publishedAtMs - a.article.publishedAtMs)
+          .map(item => item.article);
       }
-
-      const xml = await response.text();
-      const parser = new xml2js.Parser({ explicitArray: false, mergeAttrs: true, trim: true });
-      const parsed = await parser.parseStringPromise(xml);
-
-      let items = [];
-      if (parsed?.rss?.channel?.item) {
-        items = Array.isArray(parsed.rss.channel.item) ? parsed.rss.channel.item : [parsed.rss.channel.item];
-      } else if (parsed?.feed?.entry) {
-        items = Array.isArray(parsed.feed.entry) ? parsed.feed.entry : [parsed.feed.entry];
-      }
-
-      const articles = items.map((item, index) => normalizeArticle(sourceKey, item, index)).filter(Boolean);
-
-      rssCache.set(rssUrl, { value: articles, expires: Date.now() + RSS_CACHE_MS });
-      pruneCache(rssCache, RSS_CACHE_LIMIT);
-
-      return articles;
-    } finally {
-      pendingFetches.delete(rssUrl);
+    } else {
+      results.sort((a, b) => b.publishedAtMs - a.publishedAtMs);
     }
-  })();
 
-  pendingFetches.set(rssUrl, fetchPromise);
-  return fetchPromise;
-}
-
-function normalizeArticle(sourceKey, item, index) {
-  if (!item) return null;
-
-  const title = stripHtml(extractText(item.title) || '');
-  const description = stripHtml(
-    extractText(item.description) ||
-      extractText(item.summary) ||
-      extractText(item['media:description']) ||
-      extractText(item['content:encoded'])
-  );
-  const link = extractLink(item);
-  const imageUrl = extractImage(item);
-  const fullTextSource =
-    extractText(item['content:encoded']) ||
-    extractText(item.description) ||
-    extractText(item.summary) ||
-    extractText(item.content) ||
-    '';
-  const fullTextClean = stripHtml(fullTextSource);
-  const fullText = fullTextClean.length > 4000 ? `${fullTextClean.slice(0, 4000)}…` : fullTextClean;
-  const publishedDate =
-    parseDate(item.pubDate) || parseDate(item.published) || parseDate(item.updated) || parseDate(item.date);
-  const publishedAt = publishedDate ? publishedDate.toISOString() : null;
-  const publishedAtMs = publishedDate ? publishedDate.getTime() : 0;
-  const guid =
-    extractText(item.guid) ||
-    (typeof item.id === 'string' ? item.id : '') ||
-    link ||
-    `${sourceKey}-${publishedAtMs || Date.now()}-${index}`;
-
-  return {
-    id: guid,
-    source: sourceKey,
-    sourceTitle: feedTitles[sourceKey] || sourceKey,
-    title: title || '(Без заголовка)',
-    snippet: description || '(Описание недоступно)',
-    link: link || '',
-    imageUrl: imageUrl || null,
-    fullText,
-    publishedAt,
-    publishedAtMs
-  };
-}
-
-// Создаем regex'ы для токенов один раз (оптимизация производительности)
-function buildTokenRegexes(tokens) {
-  return tokens.map(token => {
-    const escapedToken = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // Добавляем дефис для корректной обработки слов типа "COVID-19"
-    return new RegExp(`(?:^|[\\s,.;:!?"'()\\[\\]{}<>/@#%^&*+=|~\`-])${escapedToken}(?:[\\s,.;:!?"'()\\[\\]{}<>/@#%^&*+=|~\`-]|$)`, 'iu');
-  });
-}
-
-function scoreArticle(article, tokenRegexes) {
-  if (!tokenRegexes.length) return { article, score: 0 };
-
-  const title = (article.title || '').toLowerCase();
-  const snippet = (article.snippet || '').toLowerCase();
-  const fullText = (article.fullText || '').toLowerCase();
-
-  let score = 0;
-
-  for (const regex of tokenRegexes) {
-    // Вес для заголовка (самый важный)
-    if (regex.test(title)) {
-      score += 5;
-    }
-    // Вес для сниппета (средняя важность)
-    if (regex.test(snippet)) {
-      score += 3;
-    }
-    // Вес для полного текста (низкая важность)
-    if (regex.test(fullText)) {
-      score += 1;
-    }
+    const limit = viewAll ? CONFIG.SEARCH.MAX_RESULTS_VIEW_ALL : CONFIG.SEARCH.MAX_RESULTS_DEFAULT;
+    return results.slice(0, limit);
   }
 
-  return { article, score };
+  _tokenize(text) {
+    return text.toLowerCase()
+      .split(/[\s,.;:!?"'()\[\]{}<>/@#%^&*+=|~`]+/)
+      .map(t => t.trim())
+      .filter(t => t.length >= 2);
+  }
+
+  _score(article, regexes) {
+    let score = 0;
+    const title = article.title.toLowerCase();
+    const snippet = article.snippet.toLowerCase();
+
+    for (const re of regexes) {
+      if (re.test(title)) score += 5;
+      else if (re.test(snippet)) score += 2;
+    }
+    return score;
+  }
 }
 
-// Health check endpoint
+/**
+ * Main Application Setup
+ */
+const rssCache = new LRUCache(CONFIG.CACHE.RSS_LIMIT);
+const translationCache = new LRUCache(CONFIG.CACHE.TRANSLATION_LIMIT);
+
+const translationService = new TranslationService(translationCache);
+const rssService = new RSSService(rssCache);
+const searchService = new SearchService(rssService, translationService);
+
+const app = express();
+const rateLimiter = new RateLimiter(CONFIG.RATE_LIMIT.WINDOW_MS, CONFIG.RATE_LIMIT.MAX_REQUESTS);
+
+app.use(cors({
+  origin: CONFIG.ALLOWED_ORIGIN,
+  methods: ['GET', 'POST'],
+  maxAge: 86400
+}));
+app.use(express.json({ limit: '10kb' }));
+app.use('/api/', rateLimiter.middleware());
+app.use(express.static(path.join(__dirname)));
+
+// API Routes
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     uptime: process.uptime(),
-    cacheSize: {
+    cache: {
       rss: rssCache.size,
       translation: translationCache.size
     }
   });
 });
 
-// /api/search?q=topic&source=bbc&view_all=true&refresh=true
+app.get('/api/sources', (req, res) => {
+  res.json({
+    ok: true,
+    sources: Object.entries(FEED_TITLES).map(([id, title]) => ({ id, title }))
+  });
+});
+
 app.get('/api/search', async (req, res) => {
-  const source = (req.query.source || '').toLowerCase().slice(0, 50);
-  let searchQuery = (req.query.q || '').trim();
-  const viewAll = req.query.view_all === 'true';
-  const refresh = req.query.refresh === 'true';
-
-  // Validate and limit query length
-  if (searchQuery.length > MAX_QUERY_LENGTH) {
-    searchQuery = searchQuery.slice(0, MAX_QUERY_LENGTH);
-  }
-
-  // Clear RSS cache if refresh is requested
-  if (refresh) {
-    rssCache.clear();
-  }
-
   try {
-    // Validate source if provided
-    const sourcesToLoad = source && rssFeeds[source]
-      ? [source]
-      : Object.keys(rssFeeds);
+    const { q, source, view_all, refresh } = req.query;
 
-    let tokens = [];
-    if (searchQuery) {
-      const translatedQuery = await translateQueryToEnglish(searchQuery);
-      tokens = buildSearchTokens(searchQuery, translatedQuery);
-    }
+    const results = await searchService.search(q, source, {
+      viewAll: view_all === 'true',
+      refresh: refresh === 'true'
+    });
 
-    const articlesNested = await Promise.all(
-      sourcesToLoad.map(async key => {
-        const rssUrl = rssFeeds[key];
-        if (!rssUrl) {
-          return [];
-        }
-        try {
-          return await fetchFeedWithCache(key, rssUrl);
-        } catch (error) {
-          console.error(`Failed to fetch feed "${key}"`, error.message);
-          return [];
-        }
-      })
-    );
+    // Translate UI elements (titles/snippets) for display
+    // Using Promise.all with concurrency limit is implicit via translationService queue
+    const translatedResults = await Promise.all(results.map(async item => {
+      const [titleRu, snippetRu] = await Promise.all([
+        translationService.translate(item.title, 'ru'),
+        translationService.translate(item.snippet, 'ru')
+      ]);
+      return { ...item, title_ru: titleRu, snippet_ru: snippetRu };
+    }));
 
-    let articles = articlesNested.flat();
-
-    if (tokens.length) {
-      // Компилируем regex'ы один раз для всех статей
-      const tokenRegexes = buildTokenRegexes(tokens);
-      articles = articles
-        .map(article => scoreArticle(article, tokenRegexes))
-        .filter(item => item.score > 0)
-        .sort((a, b) => {
-          if (b.score !== a.score) {
-            return b.score - a.score;
-          }
-          return (b.article.publishedAtMs || 0) - (a.article.publishedAtMs || 0);
-        })
-        .map(item => item.article);
-    } else {
-      articles.sort((a, b) => (b.publishedAtMs || 0) - (a.publishedAtMs || 0));
-    }
-
-    // viewAll returns up to 100 items, otherwise 30
-    const limit = viewAll ? 100 : 30;
-    const limited = articles.slice(0, limit);
-
-    const translated = await Promise.all(
-      limited.map(async item => {
-        const [titleRu, snippetRu] = await Promise.all([
-          translateText(item.title, { to: 'ru', from: 'auto' }),
-          translateText(item.snippet, { to: 'ru', from: 'auto' })
-        ]);
-        return {
-          ...item,
-          title_ru: titleRu,
-          snippet_ru: snippetRu
-        };
-      })
-    );
-
-    res.json({ ok: true, results: translated, count: translated.length });
+    res.json({ ok: true, results: translatedResults, count: translatedResults.length });
   } catch (error) {
-    console.error('RSS parsing error:', error);
-    res.status(500).json({ ok: false, error: 'Failed to parse RSS feed.' });
+    console.error('Search API Error:', error);
+    res.status(500).json({ ok: false, error: 'Internal Server Error' });
   }
 });
 
 app.post('/api/translate', async (req, res) => {
-  const { text, to } = req.body || {};
+  try {
+    const { text, to } = req.body;
+    if (!text) return res.status(400).json({ ok: false, error: 'Text required' });
 
-  if (!text) {
-    return res.status(400).json({ ok: false, error: 'text required' });
+    // Basic validation
+    if (text.length > 10000) return res.status(400).json({ ok: false, error: 'Text too long' });
+
+    const translated = await translationService.translate(text, to || 'ru');
+    res.json({ ok: true, translated });
+  } catch (error) {
+    console.error('Translation API Error:', error);
+    res.status(500).json({ ok: false, error: 'Translation failed' });
   }
-
-  // Validate text length
-  if (typeof text !== 'string' || text.length > 10000) {
-    return res.status(400).json({ ok: false, error: 'Invalid text' });
-  }
-
-  // Validate target language
-  const validLanguages = ['ru', 'en', 'de', 'fr', 'es', 'it', 'pt', 'zh', 'ja', 'ko'];
-  const targetLang = validLanguages.includes(to) ? to : 'ru';
-
-  const translated = await translateText(text, { to: targetLang, from: 'auto' });
-  res.json({ ok: true, translated });
 });
 
-// List available sources
-app.get('/api/sources', (req, res) => {
-  const sources = Object.entries(feedTitles).map(([key, title]) => ({
-    id: key,
-    title
-  }));
-  res.json({ ok: true, sources });
-});
-
-// Serve index.html for root path
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-// Catch-all for SPA
+// Fallback for SPA
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Export for Vercel serverless
+// Periodic Cleanup
+setInterval(() => {
+  rssCache.pruneExpired();
+  translationCache.pruneExpired();
+}, 60000);
+
+// Export for testing/serverless
 module.exports = app;
 
-// Start server only if run directly (not imported by Vercel)
+// Start Server
 if (require.main === module) {
-  const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
-    console.log(`Server listening on http://localhost:${PORT}`);
+  app.listen(CONFIG.PORT, () => {
+    console.log(`Server running on http://localhost:${CONFIG.PORT}`);
   });
 }
