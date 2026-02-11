@@ -203,6 +203,10 @@
             transform: translateX(20px);
         }
 
+        label.toggle input:focus-visible + .toggle__indicator {
+            box-shadow: 0 0 0 3px rgba(233, 137, 115, 0.45);
+        }
+
         .toggle__label {
             pointer-events: none;
         }
@@ -748,7 +752,7 @@
                 <input type="hidden" name="view_all" value="off" />
                 <input type="hidden" name="refreshed" value="" />
                 <div class="search-field">
-                    <input type="text" name="q" value="{{ query }}" placeholder="Поиск по заголовкам, описаниям и источникам" />
+                    <input type="text" name="q" value="{{ query }}" placeholder="Поиск по заголовкам, описаниям и источникам" aria-label="Поиск" />
                 </div>
                 <div class="toggles">
                     <label class="toggle">
