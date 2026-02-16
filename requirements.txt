@@ -1,8 +1,9 @@
 fastapi
 uvicorn
 jinja2
-requests
+httpx
 feedparser
 beautifulsoup4
 deep-translator
 pillow
+pydantic
