@@ -417,8 +417,27 @@ class SearchService {
       sources.map(key => this.rssService.fetchFeed(key, RSS_FEEDS[key]))
     )).flat();
 
+    // Deduplicate
+    allArticles.sort((a, b) => b.publishedAtMs - a.publishedAtMs);
+    const deduplicatedArticles = [];
+    const seenLinks = new Set();
+    const seenTitles = new Set();
+
+    for (const article of allArticles) {
+      const cleanLink = (article.link || '').toLowerCase().replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
+      const normTitle = (article.title || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
+      
+      if ((cleanLink && seenLinks.has(cleanLink)) || (normTitle && seenTitles.has(normTitle))) {
+        continue;
+      }
+      
+      deduplicatedArticles.push(article);
+      if (cleanLink) seenLinks.add(cleanLink);
+      if (normTitle) seenTitles.add(normTitle);
+    }
+
     // Filtering and Scoring
-    let results = allArticles;
+    let results = deduplicatedArticles;
     if (query) {
       const translatedQuery = await this.translationService.translate(query, 'en');
       const tokens = this._tokenize(query).concat(this._tokenize(translatedQuery));
@@ -427,14 +446,12 @@ class SearchService {
       if (uniqueTokens.length > 0) {
         const regexes = uniqueTokens.map(t => new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu'));
 
-        results = allArticles
+        results = deduplicatedArticles
           .map(article => ({ article, score: this._score(article, regexes) }))
           .filter(item => item.score > 0)
           .sort((a, b) => b.score - a.score || b.article.publishedAtMs - a.article.publishedAtMs)
           .map(item => item.article);
       }
-    } else {
-      results.sort((a, b) => b.publishedAtMs - a.publishedAtMs);
     }
 
     const limit = viewAll ? CONFIG.SEARCH.MAX_RESULTS_VIEW_ALL : CONFIG.SEARCH.MAX_RESULTS_DEFAULT;
