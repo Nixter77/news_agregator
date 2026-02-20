@@ -338,11 +338,23 @@ class FeedService:
             # Sort and Deduplicate
             new_items.sort(key=lambda x: x.published, reverse=True)
             unique_items = []
-            seen = set()
+            seen_links = set()
+            seen_titles = set()
+            
             for item in new_items:
-                if str(item.link) not in seen:
+                # Normalize link for stricter matching (strip protocol and www)
+                link_str = str(item.link).lower()
+                clean_link = re.sub(r"^https?://(www\.)?", "", link_str).rstrip("/")
+                
+                # Normalize title to catch similar strings with different casing/punctuation
+                norm_title = re.sub(r"[^\w\s]", "", item.orig_title.lower())
+                norm_title = " ".join(norm_title.split())
+
+                if clean_link not in seen_links and norm_title not in seen_titles:
                     unique_items.append(item)
-                    seen.add(str(item.link))
+                    seen_links.add(clean_link)
+                    if norm_title:  # Add title to seen if it's not empty
+                        seen_titles.add(norm_title)
 
             self._cache = unique_items
             self._last_update = time.time()
