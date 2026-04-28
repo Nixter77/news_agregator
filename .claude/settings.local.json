@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(frontend-design)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(git rebase:*)",
+      "Bash(cat:*)",
+      "Bash(node --check:*)",
+      "Bash(gh api:*)",
+      "Bash(curl:*)",
+      "WebFetch(domain:news-agregator-nixter77s-projects.vercel.app)",
+      "Bash(git ls-tree:*)"
+    ]
+  }
+}

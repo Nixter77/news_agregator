@@ -1,0 +1,65 @@
+2025-05-01 23:33:16,256 | INFO | BBC News → 44 entries
+2025-05-01 23:33:36,719 | ERROR | HTTP error https://feeds.reuters.com/reuters/worldNews → HTTPSConnectionPool(host='feeds.reuters.com', port=443): Max retries exceeded with url: /reuters/worldNews (Caused by NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x111b53770>: Failed to resolve 'feeds.reuters.com' ([Errno 8] nodename nor servname provided, or not known)"))
+2025-05-01 23:33:50,940 | ERROR | HTTP error https://www.aljazeera.com/xml/rss/all.xml → HTTPSConnectionPool(host='www.aljazeera.com', port=443): Max retries exceeded with url: /xml/rss/all.xml (Caused by ResponseError('too many 503 error responses'))
+2025-05-01 23:33:51,392 | INFO | Jerusalem Post → 79 entries
+2025-05-01 23:34:32,973 | ERROR | HTTP error https://rsshub.app/haaretz/english → HTTPSConnectionPool(host='rsshub.app', port=443): Max retries exceeded with url: /haaretz/english (Caused by ResponseError('too many 429 error responses'))
+2025-05-01 23:34:47,518 | ERROR | HTTP error https://www.timesofisrael.com/feed/ → HTTPSConnectionPool(host='www.timesofisrael.com', port=443): Max retries exceeded with url: /feed/ (Caused by ResponseError('too many 403 error responses'))
+2025-05-01 23:34:49,014 | INFO | Kyiv Independent → 0 entries
+2025-05-01 23:34:50,063 | INFO | Ukrinform → 0 entries
+2025-05-01 23:35:04,860 | ERROR | HTTP error https://rss.cnn.com/rss/edition_world.rss → HTTPSConnectionPool(host='rss.cnn.com', port=443): Max retries exceeded with url: /rss/edition_world.rss (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1000)')))
+2025-05-01 23:35:05,424 | INFO | Guardian World → 54 entries
+2025-05-01 23:35:13,444 | INFO | Associated Press → 0 entries
+2025-05-01 23:35:13,984 | INFO | DW → 147 entries
+2025-05-01 23:35:27,601 | INFO | Sky News → 10 entries
+2025-05-02 00:44:35,607 | INFO | BBC News → 44 entries
+2025-05-02 00:44:50,598 | ERROR | HTTP error https://feeds.reuters.com/reuters/worldNews → HTTPSConnectionPool(host='feeds.reuters.com', port=443): Max retries exceeded with url: /reuters/worldNews (Caused by NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x11e69b3b0>: Failed to resolve 'feeds.reuters.com' ([Errno 8] nodename nor servname provided, or not known)"))
+2025-05-02 00:45:04,840 | ERROR | HTTP error https://www.aljazeera.com/xml/rss/all.xml → HTTPSConnectionPool(host='www.aljazeera.com', port=443): Max retries exceeded with url: /xml/rss/all.xml (Caused by ResponseError('too many 503 error responses'))
+2025-05-02 00:45:06,069 | INFO | Jerusalem Post → 79 entries
+2025-05-02 00:45:42,461 | ERROR | HTTP error https://rsshub.app/haaretz/english → HTTPSConnectionPool(host='rsshub.app', port=443): Max retries exceeded with url: /haaretz/english (Caused by ResponseError('too many 429 error responses'))
+2025-05-02 00:45:57,051 | ERROR | HTTP error https://www.timesofisrael.com/feed/ → HTTPSConnectionPool(host='www.timesofisrael.com', port=443): Max retries exceeded with url: /feed/ (Caused by ResponseError('too many 403 error responses'))
+2025-05-02 00:45:58,601 | INFO | Kyiv Independent → 0 entries
+2025-05-02 00:45:59,466 | INFO | Ukrinform → 0 entries
+2025-05-02 00:46:14,734 | ERROR | HTTP error https://rss.cnn.com/rss/edition_world.rss → HTTPSConnectionPool(host='rss.cnn.com', port=443): Max retries exceeded with url: /rss/edition_world.rss (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1000)')))
+2025-05-02 00:46:16,140 | INFO | Guardian World → 54 entries
+2025-05-02 00:46:19,091 | INFO | Associated Press → 0 entries
+2025-05-02 00:46:19,837 | INFO | DW → 147 entries
+2025-05-02 00:46:20,227 | INFO | Sky News → 10 entries
+2025-05-02 02:43:22,698 | INFO | BBC News → 46 entries
+2025-05-02 02:43:37,743 | ERROR | HTTP error https://feeds.reuters.com/reuters/worldNews → HTTPSConnectionPool(host='feeds.reuters.com', port=443): Max retries exceeded with url: /reuters/worldNews (Caused by NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x111c25910>: Failed to resolve 'feeds.reuters.com' ([Errno 8] nodename nor servname provided, or not known)"))
+2025-05-02 02:43:53,040 | ERROR | HTTP error https://www.aljazeera.com/xml/rss/all.xml → HTTPSConnectionPool(host='www.aljazeera.com', port=443): Max retries exceeded with url: /xml/rss/all.xml (Caused by ResponseError('too many 503 error responses'))
+2025-05-02 02:43:53,513 | INFO | Jerusalem Post → 79 entries
+2025-05-02 02:44:20,067 | ERROR | HTTP error https://rsshub.app/haaretz/english → HTTPSConnectionPool(host='rsshub.app', port=443): Max retries exceeded with url: /haaretz/english (Caused by ResponseError('too many 429 error responses'))
+2025-05-02 02:44:34,580 | ERROR | HTTP error https://www.timesofisrael.com/feed/ → HTTPSConnectionPool(host='www.timesofisrael.com', port=443): Max retries exceeded with url: /feed/ (Caused by ResponseError('too many 403 error responses'))
+2025-05-02 02:44:36,090 | INFO | Kyiv Independent → 0 entries
+2025-05-02 02:44:37,057 | INFO | Ukrinform → 0 entries
+2025-05-02 02:44:52,111 | ERROR | HTTP error https://rss.cnn.com/rss/edition_world.rss → HTTPSConnectionPool(host='rss.cnn.com', port=443): Max retries exceeded with url: /rss/edition_world.rss (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1000)')))
+2025-05-02 02:44:52,772 | INFO | Guardian World → 54 entries
+2025-05-02 02:44:54,188 | INFO | Associated Press → 0 entries
+2025-05-02 02:44:54,747 | INFO | DW → 147 entries
+2025-05-02 02:44:55,170 | INFO | Sky News → 10 entries
+2025-05-02 10:20:19,454 | INFO | BBC News → 50 entries
+2025-05-02 10:20:36,895 | ERROR | HTTP error https://feeds.reuters.com/reuters/worldNews → HTTPSConnectionPool(host='feeds.reuters.com', port=443): Max retries exceeded with url: /reuters/worldNews (Caused by NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x12b02d070>: Failed to resolve 'feeds.reuters.com' ([Errno 8] nodename nor servname provided, or not known)"))
+2025-05-02 10:20:51,072 | ERROR | HTTP error https://www.aljazeera.com/xml/rss/all.xml → HTTPSConnectionPool(host='www.aljazeera.com', port=443): Max retries exceeded with url: /xml/rss/all.xml (Caused by ResponseError('too many 503 error responses'))
+2025-05-02 10:20:51,443 | INFO | Jerusalem Post → 79 entries
+2025-05-02 10:21:20,230 | ERROR | HTTP error https://rsshub.app/haaretz/english → HTTPSConnectionPool(host='rsshub.app', port=443): Max retries exceeded with url: /haaretz/english (Caused by ResponseError('too many 429 error responses'))
+2025-05-02 10:21:34,824 | ERROR | HTTP error https://www.timesofisrael.com/feed/ → HTTPSConnectionPool(host='www.timesofisrael.com', port=443): Max retries exceeded with url: /feed/ (Caused by ResponseError('too many 403 error responses'))
+2025-05-02 10:21:36,036 | INFO | Kyiv Independent → 0 entries
+2025-05-02 10:21:36,961 | INFO | Ukrinform → 0 entries
+2025-05-02 10:21:51,975 | ERROR | HTTP error https://rss.cnn.com/rss/edition_world.rss → HTTPSConnectionPool(host='rss.cnn.com', port=443): Max retries exceeded with url: /rss/edition_world.rss (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1000)')))
+2025-05-02 10:21:52,509 | INFO | Guardian World → 54 entries
+2025-05-02 10:22:03,352 | INFO | Associated Press → 0 entries
+2025-05-02 10:22:04,827 | INFO | DW → 144 entries
+2025-05-02 10:22:08,785 | INFO | Sky News → 10 entries
+2025-05-02 13:12:04,340 | INFO | BBC News → 50 entries
+2025-05-02 13:12:21,648 | ERROR | HTTP error https://feeds.reuters.com/reuters/worldNews → HTTPSConnectionPool(host='feeds.reuters.com', port=443): Max retries exceeded with url: /reuters/worldNews (Caused by NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x1119256a0>: Failed to resolve 'feeds.reuters.com' ([Errno 8] nodename nor servname provided, or not known)"))
+2025-05-02 13:12:35,921 | ERROR | HTTP error https://www.aljazeera.com/xml/rss/all.xml → HTTPSConnectionPool(host='www.aljazeera.com', port=443): Max retries exceeded with url: /xml/rss/all.xml (Caused by ResponseError('too many 503 error responses'))
+2025-05-02 13:12:36,380 | INFO | Jerusalem Post → 79 entries
+2025-05-02 13:12:56,787 | ERROR | HTTP error https://rsshub.app/haaretz/english → HTTPSConnectionPool(host='rsshub.app', port=443): Max retries exceeded with url: /haaretz/english (Caused by ResponseError('too many 429 error responses'))
+2025-05-02 13:13:11,534 | ERROR | HTTP error https://www.timesofisrael.com/feed/ → HTTPSConnectionPool(host='www.timesofisrael.com', port=443): Max retries exceeded with url: /feed/ (Caused by ResponseError('too many 403 error responses'))
+2025-05-02 13:13:13,852 | INFO | Kyiv Independent → 0 entries
+2025-05-02 13:13:15,576 | INFO | Ukrinform → 0 entries
+2025-05-02 13:13:30,556 | ERROR | HTTP error https://rss.cnn.com/rss/edition_world.rss → HTTPSConnectionPool(host='rss.cnn.com', port=443): Max retries exceeded with url: /rss/edition_world.rss (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1000)')))
+2025-05-02 13:13:31,023 | INFO | Guardian World → 54 entries
+2025-05-02 13:13:39,425 | INFO | Associated Press → 0 entries
+2025-05-02 13:13:40,823 | INFO | DW → 146 entries
+2025-05-02 13:13:43,450 | INFO | Sky News → 10 entries

@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+jinja2
+httpx
+feedparser
+beautifulsoup4
+deep-translator
+pillow
+pydantic
