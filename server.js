@@ -201,6 +201,7 @@ class TranslationService {
     this.queue = [];
     this.activeWorkers = 0;
     this.maxWorkers = CONFIG.FETCH.MAX_CONCURRENT_TRANSLATIONS;
+    this.pending = new Map(); // cacheKey -> Array of { resolve, reject }
   }
 
   async translate(text, targetLang = 'ru') {
@@ -210,8 +211,15 @@ class TranslationService {
     const cached = this.cache.get(cacheKey);
     if (cached) return cached;
 
+    if (this.pending.has(cacheKey)) {
+      return new Promise((resolve, reject) => {
+        this.pending.get(cacheKey).push({ resolve, reject });
+      });
+    }
+
     return new Promise((resolve, reject) => {
-      this.queue.push({ text, targetLang, resolve, reject, cacheKey });
+      this.pending.set(cacheKey, [{ resolve, reject }]);
+      this.queue.push({ text, targetLang, cacheKey });
       this.processQueue();
     });
   }
@@ -225,10 +233,19 @@ class TranslationService {
     try {
       const result = await this._performTranslation(task.text, task.targetLang);
       this.cache.set(task.cacheKey, result, CONFIG.CACHE.TRANSLATION_TTL);
-      task.resolve(result);
+      
+      const listeners = this.pending.get(task.cacheKey) || [];
+      this.pending.delete(task.cacheKey);
+      for (const listener of listeners) {
+        listener.resolve(result);
+      }
     } catch (error) {
       console.error('Translation failed:', error.message);
-      task.resolve(task.text); // Fallback to original text
+      const listeners = this.pending.get(task.cacheKey) || [];
+      this.pending.delete(task.cacheKey);
+      for (const listener of listeners) {
+        listener.resolve(task.text); // Fallback to original text
+      }
     } finally {
       this.activeWorkers--;
       this.processQueue();
@@ -373,6 +390,83 @@ class RSSService {
   }
 }
 
+let globalArticles = [];
+let isInitialFetchComplete = false;
+let initialFetchPromise = null;
+
+/**
+ * Background Service: Prefetch all feeds and pre-translate the top latest articles
+ */
+async function refreshAllFeeds() {
+  console.log('Background feed refresh started...');
+  const start = Date.now();
+  
+  const sources = Object.keys(SOURCES);
+  const feedPromises = sources.map(async key => {
+    try {
+      return await rssService.fetchFeed(key, SOURCES[key].url);
+    } catch (e) {
+      console.error(`Failed to fetch feed ${key} in background: ${e.message}`);
+      return [];
+    }
+  });
+
+  const allArticles = (await Promise.all(feedPromises)).flat();
+  
+  // Deduplicate and sort
+  allArticles.sort((a, b) => b.publishedAtMs - a.publishedAtMs);
+  const deduplicatedArticles = [];
+  const seenLinks = new Set();
+  const seenTitles = new Set();
+
+  for (const article of allArticles) {
+    const cleanLink = (article.link || '').toLowerCase().replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
+    const normTitle = (article.title || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
+    
+    if ((cleanLink && seenLinks.has(cleanLink)) || (normTitle && seenTitles.has(normTitle))) {
+      continue;
+    }
+    
+    // Preserve already-translated fields if this article was in our global cache
+    const existing = globalArticles.find(g => g.id === article.id || (g.link && g.link === article.link));
+    if (existing) {
+      if (existing.title_ru) article.title_ru = existing.title_ru;
+      if (existing.snippet_ru) article.snippet_ru = existing.snippet_ru;
+    }
+
+    deduplicatedArticles.push(article);
+    if (cleanLink) seenLinks.add(cleanLink);
+    if (normTitle) seenTitles.add(normTitle);
+  }
+
+  globalArticles = deduplicatedArticles.slice(0, 500);
+  isInitialFetchComplete = true;
+
+  console.log(`Background feed refresh finished in ${Date.now() - start}ms. Total articles: ${globalArticles.length}`);
+
+  // Trigger background pre-translation for the top 40 articles
+  triggerBackgroundTranslations(globalArticles.slice(0, 40));
+}
+
+async function triggerBackgroundTranslations(articles) {
+  for (const article of articles) {
+    if (article.title_ru && article.snippet_ru) continue; // Already translated
+
+    (async () => {
+      try {
+        if (!article.title_ru) {
+          article.title_ru = await translationService.translate(article.title, 'ru');
+        }
+        if (!article.snippet_ru) {
+          article.snippet_ru = await translationService.translate(article.snippet, 'ru');
+        }
+      } catch (e) {
+        // Silently catch translation errors in the background
+      }
+    })();
+  }
+}
+
 /**
  * Service: Search Logic
  */
@@ -385,40 +479,53 @@ class SearchService {
   async search(query, sourceKey, options = {}) {
     const { viewAll, refresh } = options;
 
-    // Determine sources
-    const sources = sourceKey && SOURCES[sourceKey] ? [sourceKey] : Object.keys(SOURCES);
-
-    if (refresh) {
-      this.rssService.cache.clear();
+    // Handle initial fetch wait if cache is completely empty
+    if (!isInitialFetchComplete && initialFetchPromise) {
+      console.log('Search requested but initial fetch is in progress, awaiting...');
+      await initialFetchPromise;
     }
 
-    // Parallel Fetch with Concurrency Limit could be added here if needed,
-    // currently Promise.all is used but controlled by service logic.
-    const allArticles = (await Promise.all(
-      sources.map(key => this.rssService.fetchFeed(key, SOURCES[key].url))
-    )).flat();
+    let articles = [];
 
-    // Deduplicate
-    allArticles.sort((a, b) => b.publishedAtMs - a.publishedAtMs);
-    const deduplicatedArticles = [];
-    const seenLinks = new Set();
-    const seenTitles = new Set();
-
-    for (const article of allArticles) {
-      const cleanLink = (article.link || '').toLowerCase().replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
-      const normTitle = (article.title || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
-      
-      if ((cleanLink && seenLinks.has(cleanLink)) || (normTitle && seenTitles.has(normTitle))) {
-        continue;
+    if (refresh) {
+      if (sourceKey && SOURCES[sourceKey]) {
+        // Single source: force fetch on-demand and update globalArticles
+        const freshSourceArticles = await this.rssService.fetchFeed(sourceKey, SOURCES[sourceKey].url);
+        
+        const otherArticles = globalArticles.filter(a => a.source !== sourceKey);
+        const combined = [...freshSourceArticles, ...otherArticles];
+        combined.sort((a, b) => b.publishedAtMs - a.publishedAtMs);
+        
+        const deduplicated = [];
+        const seenLinks = new Set();
+        const seenTitles = new Set();
+        for (const article of combined) {
+          const cleanLink = (article.link || '').toLowerCase().replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
+          const normTitle = (article.title || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
+          if ((cleanLink && seenLinks.has(cleanLink)) || (normTitle && seenTitles.has(normTitle))) {
+            continue;
+          }
+          deduplicated.push(article);
+          if (cleanLink) seenLinks.add(cleanLink);
+          if (normTitle) seenTitles.add(normTitle);
+        }
+        globalArticles = deduplicated.slice(0, 500);
+        articles = globalArticles.filter(a => a.source === sourceKey);
+      } else {
+        // All sources: trigger background refresh but return current cached instantly for speed
+        refreshAllFeeds().catch(console.error);
+        articles = globalArticles;
       }
-      
-      deduplicatedArticles.push(article);
-      if (cleanLink) seenLinks.add(cleanLink);
-      if (normTitle) seenTitles.add(normTitle);
+    } else {
+      if (sourceKey && SOURCES[sourceKey]) {
+        articles = globalArticles.filter(a => a.source === sourceKey);
+      } else {
+        articles = globalArticles;
+      }
     }
 
     // Filtering and Scoring
-    let results = deduplicatedArticles;
+    let results = articles;
     if (query) {
       const translatedQuery = await this.translationService.translate(query, 'en');
       const tokens = this._tokenize(query).concat(this._tokenize(translatedQuery));
@@ -427,7 +534,7 @@ class SearchService {
       if (uniqueTokens.length > 0) {
         const regexes = uniqueTokens.map(t => new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu'));
 
-        results = deduplicatedArticles
+        results = articles
           .map(article => ({ article, score: this._score(article, regexes) }))
           .filter(item => item.score > 0)
           .sort((a, b) => b.score - a.score || b.article.publishedAtMs - a.article.publishedAtMs)
@@ -450,10 +557,12 @@ class SearchService {
     let score = 0;
     const title = article.title.toLowerCase();
     const snippet = article.snippet.toLowerCase();
+    const titleRu = (article.title_ru || '').toLowerCase();
+    const snippetRu = (article.snippet_ru || '').toLowerCase();
 
     for (const re of regexes) {
-      if (re.test(title)) score += 5;
-      else if (re.test(snippet)) score += 2;
+      if (re.test(title) || re.test(titleRu)) score += 5;
+      else if (re.test(snippet) || re.test(snippetRu)) score += 2;
     }
     return score;
   }
@@ -468,6 +577,14 @@ const translationCache = new LRUCache(CONFIG.CACHE.TRANSLATION_LIMIT);
 const translationService = new TranslationService(translationCache);
 const rssService = new RSSService(rssCache);
 const searchService = new SearchService(rssService, translationService);
+
+// Start background prefetching immediately on startup
+initialFetchPromise = refreshAllFeeds().catch(console.error);
+
+// Set up periodic background poll every 3 minutes
+setInterval(() => {
+  refreshAllFeeds().catch(console.error);
+}, 3 * 60 * 1000).unref();
 
 const app = express();
 app.set('trust proxy', 1);

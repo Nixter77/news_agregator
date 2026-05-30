@@ -38,6 +38,17 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   let activeSearchController = null;
 
+  function getPremiumGradient(sourceKey) {
+    const key = sanitizeString(sourceKey).trim() || 'news';
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) {
+      hash = key.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const hue1 = Math.abs(hash % 360);
+    const hue2 = (hue1 + 45) % 360;
+    return `radial-gradient(circle at 10% 20%, hsl(${hue1}, 80%, 35%) 0%, hsl(${hue2}, 85%, 15%) 90%)`;
+  }
+
   function sanitizeString(str) {
     return typeof str === 'string' ? str : '';
   }
@@ -461,10 +472,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const title = escapeHtml(getFavoriteArticleTitle(favoriteArticle));
       const meta = escapeHtml(getFavoriteArticleMeta(favoriteArticle));
       const tooltip = escapeHtml(getFavoriteArticleTooltip(favoriteArticle));
-      const sourceSeed = sanitizeString(favoriteArticle.source || 'news');
-      const fallbackImage = `https://picsum.photos/seed/${encodeURIComponent(`${sourceSeed}-favorite`)}/160/160`;
-      const image = escapeHtml(safeExternalUrl(favoriteArticle.imageUrl, fallbackImage));
-      const safeFallback = escapeHtml(fallbackImage);
+      const imageUrl = safeExternalUrl(favoriteArticle.imageUrl, '');
+      const safeImageUrl = escapeHtml(imageUrl);
+      const sourceInitials = escapeHtml((favoriteArticle.sourceTitle || favoriteArticle.source || 'N').charAt(0).toUpperCase());
+      const premiumGradient = getPremiumGradient(favoriteArticle.source);
 
       return `
         <div class="favorite-item" data-favorite-key="${articleKey}">
@@ -474,7 +485,14 @@ document.addEventListener('DOMContentLoaded', () => {
             data-favorite-open="${articleKey}"
             title="${tooltip}"
           >
-            <img src="${image}" class="favorite-item__thumb" alt="${title}" onerror="this.onerror=null;this.src='${safeFallback}';">
+            <div class="favorite-item__media-container">
+              ${imageUrl ? `
+                <img src="${safeImageUrl}" class="favorite-item__thumb" alt="${title}" onerror="this.classList.add('d-none'); this.nextElementSibling.classList.remove('d-none');">
+              ` : ''}
+              <div class="favorite-item__thumb-placeholder ${imageUrl ? 'd-none' : ''}" style="background: ${premiumGradient};">
+                <span>${sourceInitials}</span>
+              </div>
+            </div>
             <span class="favorite-item__content">
               <span class="favorite-item__title">${title}</span>
               <span class="favorite-item__meta">${meta}</span>
@@ -877,13 +895,13 @@ document.addEventListener('DOMContentLoaded', () => {
       : sanitizeString(article.snippet);
     const timeMeta = computeTimeMeta(article.publishedAt);
     const sourceTitle = sanitizeString(article.sourceTitle || article.source);
-    const imageSeed = sanitizeString(article.source || 'news');
-    const fallbackImage = `https://picsum.photos/seed/${encodeURIComponent(imageSeed)}/800/500`;
-    const image = safeExternalUrl(article.imageUrl, fallbackImage);
+    
+    const imageUrl = safeExternalUrl(article.imageUrl, '');
+    const premiumGradient = getPremiumGradient(article.source);
 
     const highlightedTitle = highlightMatches(title, highlightTokens);
     const highlightedSnippet = highlightMatches(snippet, highlightTokens);
-    const safeImage = escapeHtml(image);
+    const safeImageUrl = escapeHtml(imageUrl);
     const safeId = escapeHtml(article.id || '');
     const safeSource = escapeHtml(article.source || '');
     const safeSourceTitle = escapeHtml(sourceTitle);
@@ -895,7 +913,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const safeTitleRu = escapeHtml(sanitizeString(article.title_ru).trim());
     const safeSnippet = escapeHtml(sanitizeString(article.snippet).trim());
     const safeSnippetRu = escapeHtml(sanitizeString(article.snippet_ru).trim());
-    const safeFallback = escapeHtml(fallbackImage);
     const favoriteLabel = isFavorite ? 'Убрать из избранного' : 'Добавить в избранное';
     const favoriteIcon = isFavorite ? '★' : '☆';
 
@@ -915,7 +932,7 @@ document.addEventListener('DOMContentLoaded', () => {
         data-source="${safeSource}"
         data-source-title="${safeSourceTitle}"
         data-link="${safeLink}"
-        data-image-url="${safeImage}"
+        data-image-url="${safeImageUrl}"
         data-published="${safePublished}"
       >
         <div class="news-card-media">
@@ -927,7 +944,12 @@ document.addEventListener('DOMContentLoaded', () => {
             aria-label="${favoriteLabel}"
             title="${favoriteLabel}"
           ><span aria-hidden="true">${favoriteIcon}</span></button>
-          <img src="${safeImage}" class="news-card-img" alt="${safeAlt}" onerror="this.onerror=null;this.src='${safeFallback}';">
+          ${imageUrl ? `
+            <img src="${safeImageUrl}" class="news-card-img" alt="${safeAlt}" onerror="this.classList.add('d-none'); this.nextElementSibling.classList.remove('d-none');">
+          ` : ''}
+          <div class="news-card-placeholder-gradient ${imageUrl ? 'd-none' : ''}" style="background: ${premiumGradient};">
+            <span class="news-placeholder-logo">${safeSourceTitle}</span>
+          </div>
           <span class="news-card-badge">${safeSourceTitle}</span>
         </div>
         <div class="news-card-body">
