@@ -157,7 +157,7 @@ class RateLimiter {
   _prune() {
     const now = Date.now();
     for (const [ip, record] of this.hits.entries()) {
-      if (now - record.startTime > this.windowMs) {
+      if (now - record.windowStart > this.windowMs) {
         this.hits.delete(ip);
       }
     }
@@ -165,16 +165,12 @@ class RateLimiter {
 
   middleware() {
     return (req, res, next) => {
-      const forwardedFor = req.headers['x-forwarded-for'];
-      const ip = (typeof forwardedFor === 'string' && forwardedFor.split(',')[0].trim())
-        || req.ip
-        || req.connection?.remoteAddress
-        || 'unknown';
-      const record = this.hits.get(ip) || { count: 0, startTime: Date.now() };
+      const ip = req.ip || 'unknown';
+      const record = this.hits.get(ip) || { count: 0, windowStart: Date.now() };
 
-      if (Date.now() - record.startTime > this.windowMs) {
+      if (Date.now() - record.windowStart > this.windowMs) {
         record.count = 1;
-        record.startTime = Date.now();
+        record.windowStart = Date.now();
       } else {
         record.count++;
       }
@@ -255,6 +251,22 @@ class TranslationService {
 }
 
 /**
+ * Helpers for RSS parsing to avoid recreation on every item loop
+ */
+const getText = (val) => {
+  if (!val) return '';
+  if (typeof val === 'string') return val;
+  if (Array.isArray(val)) return getText(val[0]);
+  if (typeof val === 'object') {
+    if (val._) return getText(val._);
+    if (val.$?.href) return val.$.href;
+  }
+  return '';
+};
+
+const stripHtml = (str) => str.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+/**
  * Service: RSS Fetching and Parsing
  */
 class RSSService {
@@ -314,19 +326,6 @@ class RSSService {
   }
 
   _normalizeItem(sourceKey, item, index) {
-    const getText = (val) => {
-        if (!val) return '';
-        if (typeof val === 'string') return val;
-        if (Array.isArray(val)) return getText(val[0]);
-        if (typeof val === 'object') {
-            if (val._) return getText(val._);
-            if (val.$?.href) return val.$.href;
-        }
-        return '';
-    };
-
-    const stripHtml = (str) => str.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-
     const title = stripHtml(getText(item.title));
     const description = stripHtml(getText(item.description) || getText(item.summary) || getText(item['media:description']) || getText(item['content:encoded']));
 
@@ -392,11 +391,16 @@ class SearchService {
       this.rssService.cache.clear();
     }
 
-    // Parallel Fetch with Concurrency Limit could be added here if needed,
-    // currently Promise.all is used but controlled by service logic.
-    const allArticles = (await Promise.all(
-      sources.map(key => this.rssService.fetchFeed(key, SOURCES[key].url))
-    )).flat();
+    // Fetch feed sources with a concurrency limit
+    const allArticles = [];
+    const concurrencyLimit = CONFIG.FETCH.MAX_CONCURRENT_FEEDS;
+    for (let i = 0; i < sources.length; i += concurrencyLimit) {
+      const chunk = sources.slice(i, i + concurrencyLimit);
+      const results = await Promise.all(
+        chunk.map(key => this.rssService.fetchFeed(key, SOURCES[key].url))
+      );
+      allArticles.push(...results.flat());
+    }
 
     // Deduplicate
     allArticles.sort((a, b) => b.publishedAtMs - a.publishedAtMs);
