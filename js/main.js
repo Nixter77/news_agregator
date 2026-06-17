@@ -23,6 +23,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const favoritesStorageKey = 'news-aggregator.favorites';
   const maxFavorites = 24;
 
+  // Modern UI DOM references
+  const categoryTabs = document.querySelectorAll('.category-tab');
+  const layoutGridBtn = document.getElementById('layout-grid-btn');
+  const layoutListBtn = document.getElementById('layout-list-btn');
+  const statsToggleBtn = document.getElementById('stats-toggle-btn');
+  const statsDashboard = document.getElementById('stats-dashboard');
+  const statsCloseBtn = document.getElementById('stats-close-btn');
+  const statsKeywords = document.getElementById('stats-keywords');
+  const statsSources = document.getElementById('stats-sources');
+
   const relativeTimeFormatter = new Intl.RelativeTimeFormat('ru', { numeric: 'auto' });
   const absoluteTimeFormatter = new Intl.DateTimeFormat('ru-RU', {
     day: 'numeric',
@@ -37,6 +47,20 @@ document.addEventListener('DOMContentLoaded', () => {
     minute: '2-digit'
   });
   let activeSearchController = null;
+
+  // Modern UI states
+  let clientArticlesCache = [];
+  let currentCategory = 'all';
+  let currentLayout = localStorage.getItem('news-aggregator.layout') || 'grid';
+
+  const CATEGORY_MAP = {
+    tech: ['techcrunch', 'verge', 'wired', 'engadget', 'arstechnica', 'hackernews', 'bbc_tech', 'nyt_tech', 'bloomberg_tech'],
+    business: ['forbes', 'bbc_business', 'axios'],
+    world: ['nyt_world', 'reddit_news', 'politico', 'bbc', 'nyt', 'guardian', 'cnn', 'aljazeera', 'npr', 'reuters_world'],
+    science: ['sciencedaily', 'nature', 'phys', 'space'],
+    culture: ['atlantic', 'newyorker'],
+    sports: ['espn']
+  };
 
   function sanitizeString(str) {
     return typeof str === 'string' ? str : '';
@@ -823,23 +847,130 @@ document.addEventListener('DOMContentLoaded', () => {
     return safeText;
   }
 
+  function getReadingTime(text) {
+    const words = text ? text.split(/\s+/).length : 0;
+    const wpm = 180; // slightly lower for Russian
+    const minutes = Math.ceil(words / wpm);
+    return minutes || 1;
+  }
+
+  function updateLayoutView() {
+    if (!newsContainer) return;
+    if (currentLayout === 'list') {
+      newsContainer.classList.add('view-list');
+      layoutListBtn?.classList.add('active');
+      layoutGridBtn?.classList.remove('active');
+    } else {
+      newsContainer.classList.remove('view-list');
+      layoutListBtn?.classList.remove('active');
+      layoutGridBtn?.classList.add('active');
+    }
+  }
+
+  function buildStatsDashboard(articles) {
+    if (!statsKeywords || !statsSources) return;
+
+    if (!Array.isArray(articles) || articles.length === 0) {
+      statsKeywords.innerHTML = '<p class="text-muted small">Нет данных</p>';
+      statsSources.innerHTML = '<p class="text-muted small">Нет данных</p>';
+      return;
+    }
+
+    // 1. Top Keywords
+    const excludeWords = new Set([
+      'это', 'как', 'для', 'что', 'или', 'этот', 'эта', 'эти', 'все', 'под', 'над', 'был', 'была',
+      'the', 'and', 'for', 'with', 'about', 'from', 'this', 'that'
+    ]);
+    const wordFreq = {};
+    articles.forEach(art => {
+      const text = `${art.title} ${art.snippet} ${art.title_ru || ''} ${art.snippet_ru || ''}`.toLowerCase();
+      const tokens = text.split(/[\s,.;:!?"'()\[\]{}<>/@#%^&*+=|~`\-_]+/)
+        .map(t => t.trim())
+        .filter(t => t.length > 4 && !excludeWords.has(t));
+      
+      tokens.forEach(token => {
+        wordFreq[token] = (wordFreq[token] || 0) + 1;
+      });
+    });
+
+    const topKeywords = Object.entries(wordFreq)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+
+    statsKeywords.innerHTML = topKeywords.map(([word, count]) => `
+      <button type="button" class="trend-keyword-badge" data-quick-topic="${escapeHtml(word)}">
+        #${escapeHtml(word)} <span class="trend-keyword-count">${count}</span>
+      </button>
+    `).join('') || '<p class="text-muted small">Недостаточно данных для анализа</p>';
+
+    // Add click listeners to trend keywords dynamically
+    statsKeywords.querySelectorAll('.trend-keyword-badge').forEach(badge => {
+      badge.addEventListener('click', () => {
+        if (topicInput) {
+          topicInput.value = badge.dataset.quickTopic;
+          topicInput.focus();
+          fetchAndDisplayNews();
+        }
+      });
+    });
+
+    // 2. Source distribution
+    const sourceCount = {};
+    articles.forEach(art => {
+      const src = art.sourceTitle || art.source || 'Другие';
+      sourceCount[src] = (sourceCount[src] || 0) + 1;
+    });
+
+    const sortedSources = Object.entries(sourceCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+
+    const maxCount = Math.max(...sortedSources.map(s => s[1]), 1);
+
+    statsSources.innerHTML = sortedSources.map(([src, count]) => {
+      const pct = (count / maxCount) * 100;
+      return `
+        <div class="source-stat-row">
+          <span class="source-stat-name">${escapeHtml(src)}</span>
+          <div class="source-stat-bar-container">
+            <div class="source-stat-bar" style="width: ${pct}%"></div>
+          </div>
+          <span class="source-stat-count">${count}</span>
+        </div>
+      `;
+    }).join('');
+  }
+
   function renderArticles(articles, { query, source }) {
     const messageParts = [];
     const highlightTokens = splitIntoTokens(query);
     const translate = isTranslateEnabled();
 
-    if (!Array.isArray(articles) || articles.length === 0) {
+    // Cache original raw articles
+    if (articles && articles.length > 0) {
+      clientArticlesCache = articles;
+      buildStatsDashboard(articles);
+    }
+
+    // Apply category filter if not "all"
+    let filteredArticles = articles;
+    if (currentCategory !== 'all') {
+      const allowedSources = CATEGORY_MAP[currentCategory] || [];
+      filteredArticles = articles.filter(art => allowedSources.includes(art.source));
+    }
+
+    if (!Array.isArray(filteredArticles) || filteredArticles.length === 0) {
       if (query) {
         searchFeedback.textContent = `Мы не нашли материалов по запросу «${query}». Попробуйте переформулировать или выбрать другой источник.`;
       } else {
-        searchFeedback.textContent = 'Пока свежих новостей нет. Попробуйте выбрать конкретный источник или обновите позже.';
+        searchFeedback.textContent = 'Пока свежих новостей нет в выбранной категории. Попробуйте выбрать другую категорию.';
       }
       renderEmptyState(query, source);
       document.title = query ? `«${query}» — Новостной Агрегатор` : 'Новостной Агрегатор';
       return;
     }
 
-    messageParts.push(`Показаны ${articles.length} материалов`);
+    messageParts.push(`Показаны ${filteredArticles.length} материалов`);
     if (source) {
       const selectedOption = sourceSelect?.selectedOptions?.[0]?.textContent?.trim();
       if (selectedOption) {
@@ -851,16 +982,25 @@ document.addEventListener('DOMContentLoaded', () => {
     if (query) {
       messageParts.push(`по запросу «${query}»`);
     }
+    if (currentCategory !== 'all') {
+      const catLabel = document.querySelector(`.category-tab[data-category="${currentCategory}"]`)?.textContent;
+      if (catLabel) {
+        messageParts.push(`в категории «${catLabel}»`);
+      }
+    }
     searchFeedback.textContent = `${messageParts.join(' ')}.`;
     document.title = query ? `«${query}» — Новостной Агрегатор` : 'Новостной Агрегатор';
 
     newsContainer.innerHTML = '';
     const favoriteArticles = getFavoriteArticles();
     const fragment = document.createDocumentFragment();
-    articles.forEach(article => {
+    filteredArticles.forEach(article => {
       fragment.appendChild(createCard(article, highlightTokens, translate, favoriteArticles));
     });
     newsContainer.appendChild(fragment);
+
+    // Apply list or grid layouts
+    updateLayoutView();
   }
 
   function createCard(article, highlightTokens, translate = true, favoriteArticles = []) {
@@ -899,6 +1039,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const favoriteLabel = isFavorite ? 'Убрать из избранного' : 'Добавить в избранное';
     const favoriteIcon = isFavorite ? '★' : '☆';
 
+    // Reading time calculation
+    const readingTime = getReadingTime(article.fullText || snippet);
+    const readingTimeHtml = `
+      <span class="news-meta-reading-time" title="Ориентировочное время чтения">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 3px; vertical-align: -1px;"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+        <span>${readingTime} мин</span>
+      </span>
+    `;
+
     col.innerHTML = `
       <article
         class="news-card${isFavorite ? ' news-card--bookmarked' : ''}"
@@ -936,7 +1085,10 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
         <footer class="news-card-meta">
           <span class="news-meta-source">${safeSourceTitle}</span>
-          <span class="news-meta-time" title="${timeMeta.absolute}">${timeMeta.relative}</span>
+          <div class="d-flex align-items-center gap-2">
+            ${readingTimeHtml}
+            <span class="news-meta-time" title="${timeMeta.absolute}">${timeMeta.relative}</span>
+          </div>
         </footer>
       </article>
     `;
@@ -1067,7 +1219,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  sourceSelect?.addEventListener('change', () => fetchAndDisplayNews());
+  sourceSelect?.addEventListener('change', () => {
+    if (sourceSelect.value) {
+      categoryTabs.forEach(t => {
+        t.classList.toggle('active', t.dataset.category === 'all');
+        t.setAttribute('aria-selected', t.dataset.category === 'all' ? 'true' : 'false');
+      });
+      currentCategory = 'all';
+    }
+    fetchAndDisplayNews();
+  });
   quickTopicButtons.forEach(button => {
     button.addEventListener('click', () => {
       const quickTopic = sanitizeString(button.dataset.quickTopic).trim();
@@ -1118,6 +1279,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (topicInput) topicInput.value = '';
         if (sourceSelect) sourceSelect.value = '';
         if (viewAllToggle) viewAllToggle.checked = false;
+        categoryTabs.forEach(t => {
+          t.classList.toggle('active', t.dataset.category === 'all');
+          t.setAttribute('aria-selected', t.dataset.category === 'all' ? 'true' : 'false');
+        });
+        currentCategory = 'all';
         fetchAndDisplayNews({ refresh: true });
         return;
       }
@@ -1194,7 +1360,61 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchAndDisplayNews();
   });
 
+  // Layout grid/list switch listeners
+  layoutGridBtn?.addEventListener('click', () => {
+    currentLayout = 'grid';
+    localStorage.setItem('news-aggregator.layout', 'grid');
+    updateLayoutView();
+  });
+
+  layoutListBtn?.addEventListener('click', () => {
+    currentLayout = 'list';
+    localStorage.setItem('news-aggregator.layout', 'list');
+    updateLayoutView();
+  });
+
+  // Stats Dashboard Toggle
+  statsToggleBtn?.addEventListener('click', () => {
+    const isHidden = statsDashboard?.classList.toggle('d-none');
+    statsToggleBtn?.classList.toggle('active', !isHidden);
+  });
+
+  statsCloseBtn?.addEventListener('click', () => {
+    statsDashboard?.classList.add('d-none');
+    statsToggleBtn?.classList.remove('active');
+  });
+
+  // Category Tabs click listeners
+  categoryTabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      categoryTabs.forEach(t => {
+        t.classList.remove('active');
+        t.setAttribute('aria-selected', 'false');
+      });
+      tab.classList.add('active');
+      tab.setAttribute('aria-selected', 'true');
+      
+      currentCategory = tab.dataset.category || 'all';
+
+      // If category is selected, clear source selector to avoid conflicting filters
+      if (currentCategory !== 'all' && sourceSelect) {
+        sourceSelect.value = '';
+      }
+      
+      // If we have cached articles, render instantly!
+      if (clientArticlesCache && clientArticlesCache.length > 0) {
+        renderArticles(clientArticlesCache, {
+          query: sanitizeString(topicInput?.value).trim(),
+          source: sanitizeString(sourceSelect?.value).trim()
+        });
+      } else {
+        fetchAndDisplayNews();
+      }
+    });
+  });
+
   syncStateFromUrl();
   renderSavedSearches();
+  updateLayoutView();
   fetchAndDisplayNews({ initial: true });
 });

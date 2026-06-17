@@ -473,6 +473,59 @@ const translationService = new TranslationService(translationCache);
 const rssService = new RSSService(rssCache);
 const searchService = new SearchService(rssService, translationService);
 
+/**
+ * Background scheduler to pre-fetch feeds and pre-translate top articles
+ */
+async function startBackgroundJobs() {
+  const fetchAndCacheAll = async () => {
+    console.log('[Background Job] Starting RSS pre-fetch and pre-translation...');
+    const start = Date.now();
+    const keys = Object.keys(SOURCES);
+    
+    // Fetch all feeds in chunks to respect concurrency limits
+    const concurrencyLimit = CONFIG.FETCH.MAX_CONCURRENT_FEEDS;
+    const allArticles = [];
+    
+    for (let i = 0; i < keys.length; i += concurrencyLimit) {
+      const chunk = keys.slice(i, i + concurrencyLimit);
+      const results = await Promise.all(
+        chunk.map(key => rssService.fetchFeed(key, SOURCES[key].url))
+      );
+      allArticles.push(...results.flat());
+    }
+
+    // Sort by date to find the most recent ones across all sources
+    allArticles.sort((a, b) => b.publishedAtMs - a.publishedAtMs);
+
+    // To prevent hitting google translate API limits too hard, we only pre-translate the top 3 items from each source or top 40 overall
+    const topArticlesToTranslate = allArticles.slice(0, 40);
+    
+    let translatedCount = 0;
+    await Promise.all(topArticlesToTranslate.map(async (item) => {
+      // Trigger background translation (which puts them into translation cache)
+      try {
+        await Promise.all([
+          translationService.translate(item.title, 'ru'),
+          translationService.translate(item.snippet, 'ru')
+        ]);
+        translatedCount++;
+      } catch (err) {
+        // ignore translate error
+      }
+    }));
+
+    console.log(`[Background Job] Completed in ${Date.now() - start}ms. Pre-translated: ${translatedCount} articles. Cached feeds: ${rssCache.size}.`);
+  };
+
+  // Run initial fetch
+  fetchAndCacheAll().catch(err => console.error('[Background Job] Initial run error:', err));
+
+  // Schedule every 5 minutes
+  setInterval(() => {
+    fetchAndCacheAll().catch(err => console.error('[Background Job] Scheduled run error:', err));
+  }, 5 * 60 * 1000).unref();
+}
+
 const app = express();
 app.set('trust proxy', 1);
 app.config = CONFIG;
@@ -592,6 +645,7 @@ module.exports = app;
 
 // Start Server
 if (require.main === module) {
+  startBackgroundJobs();
   app.listen(CONFIG.PORT, () => {
     console.log(`Server running on http://localhost:${CONFIG.PORT}`);
   });
