@@ -55,7 +55,7 @@ const SOURCES = {
   bbc: { url: 'https://feeds.bbci.co.uk/news/rss.xml', title: 'BBC News' },
   nyt: { url: 'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml', title: 'The New York Times' },
   guardian: { url: 'https://www.theguardian.com/world/rss', title: 'The Guardian' },
-  cnn: { url: 'http://rss.cnn.com/rss/cnn_topstories.rss', title: 'CNN' },
+  cnn: { url: 'https://rss.cnn.com/rss/cnn_topstories.rss', title: 'CNN' },
   aljazeera: { url: 'https://www.aljazeera.com/xml/rss/all.xml', title: 'Al Jazeera' },
   npr: { url: 'https://feeds.npr.org/1001/rss.xml', title: 'NPR' },
   techcrunch: { url: 'https://techcrunch.com/feed/', title: 'TechCrunch' },
@@ -92,7 +92,7 @@ class LRUCache {
     this.limit = limit;
     this.ttlFn = ttlFn; // Optional function to calculate TTL per item or global TTL logic
     this.cache = new Map();
-    setInterval(() => this.pruneExpired(), 5 * 60 * 1000).unref();
+    this._pruneInterval = setInterval(() => this.pruneExpired(), 5 * 60 * 1000).unref();
   }
 
   get(key) {
@@ -124,6 +124,10 @@ class LRUCache {
     this.cache.set(key, { value, expires });
   }
 
+  delete(key) {
+    this.cache.delete(key);
+  }
+
   clear() {
     this.cache.clear();
   }
@@ -141,6 +145,11 @@ class LRUCache {
       }
     }
   }
+
+  // Stop background pruning (useful in tests)
+  destroy() {
+    clearInterval(this._pruneInterval);
+  }
 }
 
 /**
@@ -151,7 +160,7 @@ class RateLimiter {
     this.windowMs = windowMs;
     this.max = max;
     this.hits = new Map();
-    setInterval(() => this._prune(), this.windowMs).unref();
+    this._pruneInterval = setInterval(() => this._prune(), this.windowMs).unref();
   }
 
   _prune() {
@@ -161,6 +170,11 @@ class RateLimiter {
         this.hits.delete(ip);
       }
     }
+  }
+
+  // Stop background pruning (useful in tests)
+  destroy() {
+    clearInterval(this._pruneInterval);
   }
 
   middleware() {
@@ -387,8 +401,12 @@ class SearchService {
     // Determine sources
     const sources = sourceKey && SOURCES[sourceKey] ? [sourceKey] : Object.keys(SOURCES);
 
+    // Invalidate only the requested sources so other users are unaffected
     if (refresh) {
-      this.rssService.cache.clear();
+      sources.forEach(key => {
+        const url = SOURCES[key]?.url;
+        if (url) this.rssService.cache.delete(url);
+      });
     }
 
     // Fetch feed sources with a concurrency limit
@@ -429,6 +447,7 @@ class SearchService {
       const uniqueTokens = [...new Set(tokens)];
 
       if (uniqueTokens.length > 0) {
+        // Compile regexes once per query, not inside _score
         const regexes = uniqueTokens.map(t => new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu'));
 
         results = deduplicatedArticles
@@ -544,6 +563,24 @@ app.use(cors({
   maxAge: 86400
 }));
 app.use(express.json({ limit: '10kb' }));
+
+// Security headers
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; " +
+    "script-src 'self' https://cdn.jsdelivr.net; " +
+    "style-src 'self' https://cdn.jsdelivr.net https://fonts.googleapis.com; " +
+    "font-src 'self' https://fonts.gstatic.com; " +
+    "img-src 'self' data: https:; " +
+    "connect-src 'self';"
+  );
+  next();
+});
+
 app.use('/api/', rateLimiter.middleware());
 app.use('/css', express.static(path.join(__dirname, 'css'), { fallthrough: false }));
 app.use('/js', express.static(path.join(__dirname, 'js'), { fallthrough: false }));
@@ -617,6 +654,9 @@ app.get('/api/search', async (req, res) => {
   }
 });
 
+// Allowed target languages for the /api/translate endpoint
+const ALLOWED_TARGET_LANGS = new Set(['ru', 'en', 'de', 'fr', 'es', 'zh', 'ar', 'pt', 'it', 'ja', 'ko']);
+
 app.post('/api/translate', async (req, res) => {
   try {
     const { text, to } = req.body;
@@ -624,10 +664,14 @@ app.post('/api/translate', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'Text required' });
     }
 
-    // Basic validation
     if (text.length > 10000) return res.status(400).json({ ok: false, error: 'Text too long' });
 
-    const translated = await translationService.translate(text, to || 'ru');
+    // Whitelist target language to prevent URL injection
+    const targetLang = (typeof to === 'string' && ALLOWED_TARGET_LANGS.has(to.toLowerCase()))
+      ? to.toLowerCase()
+      : 'ru';
+
+    const translated = await translationService.translate(text, targetLang);
     res.json({ ok: true, translated });
   } catch (error) {
     console.error('Translation API Error:', error);

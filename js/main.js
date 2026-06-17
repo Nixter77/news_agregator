@@ -50,6 +50,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Modern UI states
   let clientArticlesCache = [];
+  /** @type {Map<string, string>} Maps article key → fullText, kept out of DOM */
+  const fullTextStore = new Map();
   let currentCategory = 'all';
   let currentLayout = localStorage.getItem('news-aggregator.layout') || 'grid';
 
@@ -206,11 +208,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const sourceLabel = getSourceLabel(savedSearch?.source);
     const translateLabel = savedSearch?.translate ? 'Перевод' : 'Оригинал';
 
-    if (savedSearch?.query) {
-      parts.push(sourceLabel);
-    } else if (savedSearch?.source || sourceLabel) {
-      parts.push(sourceLabel);
-    }
+    // Always include source label (covers both query and source-only cases)
+    parts.push(sourceLabel);
 
     if (savedSearch?.viewAll) {
       parts.push('Все материалы');
@@ -773,6 +772,22 @@ document.addEventListener('DOMContentLoaded', () => {
     }, safeText);
   }
 
+  /**
+   * Highlight using pre-compiled regexes from renderArticles.
+   * Avoids constructing RegExp objects inside the per-card hot path.
+   * @param {string} text
+   * @param {{ token: string, re: RegExp }[]} regexes
+   */
+  function highlightMatchesWithRegexes(text, regexes) {
+    const safeText = escapeHtml(text);
+    if (!safeText || !regexes.length) return safeText;
+    return regexes.reduce((acc, { re }) => {
+      // Reset lastIndex to avoid stateful regex pitfalls
+      re.lastIndex = 0;
+      return acc.replace(re, '<mark class="news-highlight">$1</mark>');
+    }, safeText);
+  }
+
   function computeTimeMeta(isoString) {
     const parsed = isoString ? new Date(isoString) : null;
     if (!parsed || Number.isNaN(parsed.getTime())) {
@@ -847,9 +862,9 @@ document.addEventListener('DOMContentLoaded', () => {
     return safeText;
   }
 
-  function getReadingTime(text) {
+  function getReadingTime(text, isRussian = false) {
     const words = text ? text.split(/\s+/).length : 0;
-    const wpm = 180; // slightly lower for Russian
+    const wpm = isRussian ? 160 : 220; // Russian readers average slower than English
     const minutes = Math.ceil(words / wpm);
     return minutes || 1;
   }
@@ -944,11 +959,23 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderArticles(articles, { query, source }) {
     const messageParts = [];
     const highlightTokens = splitIntoTokens(query);
+    // Compile highlight regexes once for the whole render pass (not per-card)
+    const highlightRegexes = highlightTokens.map(token => ({
+      token,
+      re: new RegExp(`(${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
+    }));
     const translate = isTranslateEnabled();
 
-    // Cache original raw articles
+    // Cache original raw articles and populate fullText store
     if (articles && articles.length > 0) {
       clientArticlesCache = articles;
+      // Store full text in Map keyed by article key, keeping it out of the DOM
+      articles.forEach(article => {
+        const key = getArticleKey(article);
+        if (key && article.fullText) {
+          fullTextStore.set(key, article.fullText);
+        }
+      });
       buildStatsDashboard(articles);
     }
 
@@ -995,7 +1022,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const favoriteArticles = getFavoriteArticles();
     const fragment = document.createDocumentFragment();
     filteredArticles.forEach(article => {
-      fragment.appendChild(createCard(article, highlightTokens, translate, favoriteArticles));
+      fragment.appendChild(createCard(article, highlightRegexes, translate, favoriteArticles));
     });
     newsContainer.appendChild(fragment);
 
@@ -1003,7 +1030,13 @@ document.addEventListener('DOMContentLoaded', () => {
     updateLayoutView();
   }
 
-  function createCard(article, highlightTokens, translate = true, favoriteArticles = []) {
+  /**
+   * @param {object} article
+   * @param {{ token: string, re: RegExp }[]} highlightRegexes - pre-compiled per render pass
+   * @param {boolean} translate
+   * @param {object[]} favoriteArticles
+   */
+  function createCard(article, highlightRegexes, translate = true, favoriteArticles = []) {
     const col = document.createElement('div');
     col.className = 'news-grid-item';
 
@@ -1021,8 +1054,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const fallbackImage = `https://picsum.photos/seed/${encodeURIComponent(imageSeed)}/800/500`;
     const image = safeExternalUrl(article.imageUrl, fallbackImage);
 
-    const highlightedTitle = highlightMatches(title, highlightTokens);
-    const highlightedSnippet = highlightMatches(snippet, highlightTokens);
+    // Use pre-compiled regexes (passed from renderArticles) — no regex construction here
+    const highlightedTitle = highlightMatchesWithRegexes(title, highlightRegexes);
+    const highlightedSnippet = highlightMatchesWithRegexes(snippet, highlightRegexes);
     const safeImage = escapeHtml(image);
     const safeId = escapeHtml(article.id || '');
     const safeSource = escapeHtml(article.source || '');
@@ -1031,16 +1065,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const safeAlt = escapeHtml(title);
     const safeLink = escapeHtml(safeExternalUrl(article.link, '#'));
     const safeArticleKey = escapeHtml(articleKey);
-    const safeTitle = escapeHtml(sanitizeString(article.title).trim());
-    const safeTitleRu = escapeHtml(sanitizeString(article.title_ru).trim());
-    const safeSnippet = escapeHtml(sanitizeString(article.snippet).trim());
-    const safeSnippetRu = escapeHtml(sanitizeString(article.snippet_ru).trim());
     const safeFallback = escapeHtml(fallbackImage);
     const favoriteLabel = isFavorite ? 'Убрать из избранного' : 'Добавить в избранное';
     const favoriteIcon = isFavorite ? '★' : '☆';
 
-    // Reading time calculation
-    const readingTime = getReadingTime(article.fullText || snippet);
+    // Reading time — use translated snippet length as proxy for language
+    const readingText = article.fullText || snippet;
+    const readingTime = getReadingTime(readingText, translate);
     const readingTimeHtml = `
       <span class="news-meta-reading-time" title="Ориентировочное время чтения">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 3px; vertical-align: -1px;"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
@@ -1048,6 +1079,7 @@ document.addEventListener('DOMContentLoaded', () => {
       </span>
     `;
 
+    // fullText is stored in fullTextStore (Map) — NOT in a data attribute
     col.innerHTML = `
       <article
         class="news-card${isFavorite ? ' news-card--bookmarked' : ''}"
@@ -1056,11 +1088,6 @@ document.addEventListener('DOMContentLoaded', () => {
         aria-label="${safeAlt}. Открыть полную новость"
         data-article-key="${safeArticleKey}"
         data-id="${safeId}"
-        data-title="${safeTitle}"
-        data-title-ru="${safeTitleRu}"
-        data-snippet="${safeSnippet}"
-        data-snippet-ru="${safeSnippetRu}"
-        data-fulltext="${encodeURIComponent(sanitizeString(article.fullText))}"
         data-source="${safeSource}"
         data-source-title="${safeSourceTitle}"
         data-link="${safeLink}"
@@ -1157,14 +1184,22 @@ document.addEventListener('DOMContentLoaded', () => {
   function getArticleFromCard(card) {
     if (!card) return null;
 
+    // Prefer the in-memory cache — avoids reading large data from DOM attributes
+    const key = sanitizeString(card.dataset.articleKey).trim();
+    if (key) {
+      const cached = clientArticlesCache.find(a => getArticleKey(a) === key);
+      if (cached) return cached;
+    }
+
+    // Fallback: reconstruct from minimal DOM attributes (key fields only, no fullText)
     return {
-      key: sanitizeString(card.dataset.articleKey).trim(),
+      key,
       id: sanitizeString(card.dataset.id).trim(),
-      title: decodeURIComponentSafe(card.dataset.title) || sanitizeString(card.querySelector('.news-card-title')?.textContent).trim() || '',
-      titleRu: decodeURIComponentSafe(card.dataset.titleRu) || '',
-      snippet: decodeURIComponentSafe(card.dataset.snippet) || '',
-      snippetRu: decodeURIComponentSafe(card.dataset.snippetRu) || '',
-      fullText: decodeURIComponentSafe(card.dataset.fulltext),
+      title: sanitizeString(card.querySelector('.news-card-title')?.textContent).trim() || '',
+      titleRu: '',
+      snippet: '',
+      snippetRu: '',
+      fullText: fullTextStore.get(key) || '',
       source: sanitizeString(card.dataset.source).trim(),
       sourceTitle: sanitizeString(card.dataset.sourceTitle).trim(),
       link: sanitizeString(card.dataset.link).trim(),
@@ -1328,10 +1363,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Toggle handlers - re-render with new translation setting
+  // Translate toggle: only change display language — no server round-trip needed
   translateToggle?.addEventListener('change', () => {
     updateSaveSearchButtonState();
-    fetchAndDisplayNews();
+    if (clientArticlesCache.length > 0) {
+      // Re-render from the in-memory cache with the updated language setting
+      renderArticles(clientArticlesCache, {
+        query: sanitizeString(topicInput?.value).trim(),
+        source: sanitizeString(sourceSelect?.value).trim()
+      });
+    } else {
+      fetchAndDisplayNews();
+    }
   });
 
   viewAllToggle?.addEventListener('change', () => {
