@@ -18,9 +18,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const viewAllToggle = document.getElementById('view-all-toggle');
   const quickTopicButtons = document.querySelectorAll('[data-quick-topic]');
   const saveSearchButton = document.getElementById('save-search-button');
-  const savedSearchesContainer = document.getElementById('saved-searches-list');
   const savedSearchesStorageKey = 'news-aggregator.saved-searches';
+  const searchHistoryStorageKey = 'news-aggregator.search-history';
   const maxSavedSearches = 8;
+  const quickChipsContainer = document.querySelector('.quick-chips-scroll');
   const favoritesListContainer = document.getElementById('favorites-list');
   const favoritesCountElement = document.getElementById('favorites-count');
   const favoritesStorageKey = 'news-aggregator.favorites';
@@ -212,6 +213,70 @@ document.addEventListener('DOMContentLoaded', () => {
         savedAt: sanitizeString(item?.savedAt).trim() || new Date().toISOString()
       }))
       .sort((left, right) => new Date(right.savedAt).getTime() - new Date(left.savedAt).getTime());
+  }
+
+  function recordSearchQuery(query) {
+    const safe = sanitizeString(query).trim();
+    if (!safe || safe.length < 2) return;
+    
+    // Normalize key for frequency counting
+    const key = safe.toLowerCase();
+    const history = readJsonList(searchHistoryStorageKey);
+    const existing = history.find(item => item.query.toLowerCase() === key);
+    
+    if (existing) {
+      existing.count = (existing.count || 1) + 1;
+      existing.lastSearched = new Date().toISOString();
+      // preserve user's preferred casing
+      existing.query = safe;
+    } else {
+      history.push({
+        query: safe,
+        count: 1,
+        lastSearched: new Date().toISOString()
+      });
+    }
+    
+    writeJsonList(searchHistoryStorageKey, history);
+    renderQuickChips();
+  }
+
+  function getTopSearchQueries(limit = 3) {
+    const history = readJsonList(searchHistoryStorageKey);
+    return history
+      .sort((a, b) => (b.count - a.count) || (new Date(b.lastSearched).getTime() - new Date(a.lastSearched).getTime()))
+      .slice(0, limit)
+      .map(item => item.query);
+  }
+
+  function renderQuickChips() {
+    if (!quickChipsContainer) return;
+    const defaultChips = ['Израиль', 'Украина', 'Экономика', 'Технологии', 'ИИ', 'Наука', 'Спорт'];
+    const topSearches = getTopSearchQueries(3);
+    
+    // Combine top frequent queries with default chips without duplicates
+    const combined = [];
+    const seen = new Set();
+
+    topSearches.forEach(q => {
+      const lower = q.toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        combined.push({ label: q, isTop: true });
+      }
+    });
+
+    defaultChips.forEach(chip => {
+      const lower = chip.toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        combined.push({ label: chip, isTop: false });
+      }
+    });
+
+    quickChipsContainer.innerHTML = combined.map(item => `
+      <button type="button" class="chip-btn${item.isTop ? ' chip-btn--top' : ''}" data-quick-topic="${escapeHtml(item.label)}">${escapeHtml(item.label)}</button>
+    `).join('');
   }
 
   function storeSavedSearches(savedSearches) {
@@ -1018,6 +1083,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!data?.ok || !Array.isArray(data.results)) {
         throw new Error(data?.error || 'Не удалось получить данные');
       }
+      if (query) {
+        recordSearchQuery(query);
+      }
       renderArticles(data.results, { query, source });
     } catch (error) {
       if (error.name === 'AbortError') return;
@@ -1089,13 +1157,13 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchAndDisplayNews();
   });
 
-  quickTopicButtons.forEach(button => {
-    button.addEventListener('click', () => {
-      const quickTopic = sanitizeString(button.dataset.quickTopic).trim();
-      if (!quickTopic || !topicInput) return;
-      topicInput.value = quickTopic;
-      fetchAndDisplayNews();
-    });
+  quickChipsContainer?.addEventListener('click', event => {
+    const button = event.target.closest('[data-quick-topic]');
+    if (!button) return;
+    const quickTopic = sanitizeString(button.dataset.quickTopic).trim();
+    if (!quickTopic || !topicInput) return;
+    topicInput.value = quickTopic;
+    fetchAndDisplayNews();
   });
 
   savedSearchesContainer?.addEventListener('click', event => {
@@ -1215,6 +1283,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   syncStateFromUrl();
   renderSavedSearches();
+  renderQuickChips();
   updateLayoutView();
   fetchAndDisplayNews({ initial: true });
 });
