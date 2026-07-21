@@ -124,3 +124,32 @@ test('article endpoint requires source and id', async () => {
   assert.equal(body.ok, false);
   assert.equal(body.error, 'Source and id required');
 });
+
+test('batch translate endpoint translates array of texts', async () => {
+  const response = await fetch(`${baseUrl}/api/translate/batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', connection: 'close' },
+    body: JSON.stringify({ texts: ['Hello world', 'Breaking news'], to: 'ru' })
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.ok, true);
+  assert.equal(Array.isArray(body.translations), true);
+  assert.equal(body.translations.length, 2);
+  assert.equal(body.translations[0].original, 'Hello world');
+  assert.equal(typeof body.translations[0].translated, 'string');
+});
+
+test('search endpoint includes title_ru and snippet_ru fields', async () => {
+  const response = await fetch(`${baseUrl}/api/search?translate=true`, { headers: { connection: 'close' } });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.ok, true);
+  assert.equal(Array.isArray(body.results), true);
+  if (body.results.length > 0) {
+    assert.ok('title_ru' in body.results[0]);
+    assert.ok('snippet_ru' in body.results[0]);
+  }
+});
+

@@ -674,9 +674,10 @@ app.get('/api/sources', (req, res) => {
 
 app.get('/api/search', async (req, res) => {
   try {
-    const { q, source, view_all, refresh, category } = req.query;
+    const { q, source, view_all, refresh, category, translate } = req.query;
     const query = typeof q === 'string' ? q.trim() : '';
     const sourceKey = typeof source === 'string' ? source.trim() : '';
+    const shouldTranslate = translate !== 'false';
 
     if (query.length > CONFIG.SEARCH.MAX_QUERY_LENGTH) {
       return res.status(400).json({
@@ -698,21 +699,36 @@ app.get('/api/search', async (req, res) => {
       category: typeof category === 'string' ? category.trim() : 'all'
     });
 
-    // Non-blocking translation enrichment
-    const enrichedResults = results.map(item => {
-      const titleRu = translationService.getCached(item.title, 'ru');
-      const snippetRu = translationService.getCached(item.snippet, 'ru');
+    let enrichedResults;
+    if (shouldTranslate) {
+      enrichedResults = await Promise.all(results.map(async item => {
+        let titleRu = translationService.getCached(item.title, 'ru');
+        let snippetRu = translationService.getCached(item.snippet, 'ru');
 
-      // Trigger background translation for missing items without awaiting
-      if (!titleRu) translationService.translate(item.title, 'ru').catch(() => {});
-      if (!snippetRu) translationService.translate(item.snippet, 'ru').catch(() => {});
+        if (!titleRu && item.title) {
+          try {
+            titleRu = await translationService.translate(item.title, 'ru');
+          } catch (err) {}
+        }
+        if (!snippetRu && item.snippet) {
+          try {
+            snippetRu = await translationService.translate(item.snippet, 'ru');
+          } catch (err) {}
+        }
 
-      return {
+        return {
+          ...item,
+          title_ru: titleRu || null,
+          snippet_ru: snippetRu || null
+        };
+      }));
+    } else {
+      enrichedResults = results.map(item => ({
         ...item,
-        title_ru: titleRu || null,
-        snippet_ru: snippetRu || null
-      };
-    });
+        title_ru: translationService.getCached(item.title, 'ru') || null,
+        snippet_ru: translationService.getCached(item.snippet, 'ru') || null
+      }));
+    }
 
     res.json({ ok: true, results: enrichedResults, count: enrichedResults.length });
   } catch (error) {

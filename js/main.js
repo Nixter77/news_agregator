@@ -862,6 +862,58 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     newsContainer.appendChild(fragment);
     updateLayoutView();
+
+    if (translate) {
+      ensureArticlesTranslated(filteredArticles);
+    }
+  }
+
+  async function ensureArticlesTranslated(articles) {
+    if (!isTranslateEnabled() || !Array.isArray(articles) || articles.length === 0) return;
+
+    const missingTexts = [];
+    articles.forEach(article => {
+      if (!article.title_ru && article.title) missingTexts.push(article.title);
+      if (!article.snippet_ru && article.snippet) missingTexts.push(article.snippet);
+    });
+
+    if (missingTexts.length === 0) return;
+
+    try {
+      const resp = await fetch('/api/translate/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ texts: missingTexts, to: 'ru' })
+      });
+      const data = await resp.json();
+      if (data?.ok && Array.isArray(data.translations)) {
+        const map = new Map();
+        data.translations.forEach(item => {
+          if (item?.original && item?.translated) map.set(item.original, item.translated);
+        });
+
+        let updated = false;
+        articles.forEach(article => {
+          if (!article.title_ru && article.title && map.has(article.title)) {
+            article.title_ru = map.get(article.title);
+            updated = true;
+          }
+          if (!article.snippet_ru && article.snippet && map.has(article.snippet)) {
+            article.snippet_ru = map.get(article.snippet);
+            updated = true;
+          }
+        });
+
+        if (updated && isTranslateEnabled()) {
+          renderArticles(clientArticlesCache, {
+            query: sanitizeString(topicInput?.value).trim(),
+            source: sanitizeString(sourceSelect?.value).trim()
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('Failed client-side batch translation', err);
+    }
   }
 
   function createCard(article, highlightRegexes, translate = true) {
@@ -936,6 +988,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (viewAll) params.set('view_all', 'true');
     if (refresh) params.set('refresh', 'true');
     if (currentCategory !== 'all') params.set('category', currentCategory);
+    params.set('translate', translate ? 'true' : 'false');
 
     syncUrlFromState({ query, source, translate, viewAll });
 
@@ -1080,13 +1133,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  translateToggle?.addEventListener('change', () => {
+  translateToggle?.addEventListener('change', async () => {
     updateSaveSearchButtonState();
     if (clientArticlesCache.length > 0) {
+      const translate = isTranslateEnabled();
       renderArticles(clientArticlesCache, {
         query: sanitizeString(topicInput?.value).trim(),
         source: sanitizeString(sourceSelect?.value).trim()
       });
+      if (translate) {
+        await ensureArticlesTranslated(clientArticlesCache);
+      }
     } else {
       fetchAndDisplayNews();
     }
