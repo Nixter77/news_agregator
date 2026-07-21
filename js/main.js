@@ -18,6 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const viewAllToggle = document.getElementById('view-all-toggle');
   const quickTopicButtons = document.querySelectorAll('[data-quick-topic]');
   const saveSearchButton = document.getElementById('save-search-button');
+  const savedSearchesContainer = document.getElementById('saved-searches-list');
   const savedSearchesStorageKey = 'news-aggregator.saved-searches';
   const searchHistoryStorageKey = 'news-aggregator.search-history';
   const maxSavedSearches = 8;
