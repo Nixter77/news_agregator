@@ -695,17 +695,32 @@ body {
   color: #FFCC00;
 }
 
-.news-card-badge {
+.news-card-badges {
   position: absolute;
   bottom: 10px;
   left: 10px;
-  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 2;
+}
+
+.news-card-badge {
+  background: rgba(0, 0, 0, 0.65);
   backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   color: #FFFFFF;
   font-size: 11px;
   font-weight: 600;
   padding: 3px 8px;
   border-radius: var(--radius-sm);
+  letter-spacing: 0.02em;
+}
+
+.news-card-badge--lang {
+  background: rgba(0, 122, 255, 0.85);
+  color: #FFFFFF;
+  font-weight: 700;
 }
 
 .news-card-body {
