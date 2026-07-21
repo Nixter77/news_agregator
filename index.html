@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Новостной агрегатор со всего мира с мгновенным переводом на русский язык">
+    <meta name="description" content="Мировые новости с мгновенным переводом на русский язык">
     <meta name="theme-color" content="#007AFF">
     <title>Новостной Агрегатор</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
+    
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
@@ -14,23 +14,30 @@
 </head>
 <body>
 
-    <main class="container">
-        <div class="surface">
-            <header class="hero">
-                <div class="hero-inner">
-                    <h1 class="hero-title">Новостной Агрегатор</h1>
-                    <p class="hero-subtitle">Свежие новости из ведущих мировых источников с мгновенным переводом на русский язык</p>
-                    <div class="hero-meta" aria-label="Подсказки для быстрого поиска">
-                        <span class="hero-meta__pill">Нажмите `/`, чтобы перейти к поиску</span>
-                        <span class="hero-meta__pill">Enter обновляет выдачу</span>
-                    </div>
+    <header class="app-header">
+        <div class="header-inner">
+            <div class="brand">
+                <div class="brand-icon">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"></path><path d="M18 14h-8"></path><path d="M15 18h-5"></path><path d="M10 6h8v4h-8V6Z"></path></svg>
                 </div>
-            </header>
+                <h1 class="brand-title">Новостной Агрегатор</h1>
+            </div>
+            
+            <div class="header-actions">
+                <button type="button" id="theme-toggle-btn" class="icon-btn" title="Сменить тему" aria-label="Сменить тему">
+                    <svg class="theme-icon-sun d-none" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg>
+                    <svg class="theme-icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
+                </button>
+            </div>
+        </div>
+    </header>
 
-            <section class="search-panel">
-                <form id="search-form" class="row g-3 g-lg-4 align-items-end">
-                    <div class="col-12 col-lg-4">
-                        <label for="source-select" class="form-label">Источник</label>
+    <main class="main-layout">
+        <!-- Sticky Search Bar -->
+        <section class="sticky-search-section">
+            <form id="search-form" class="search-form">
+                <div class="search-inputs-row">
+                    <div class="field-group field-source">
                         <select class="form-select" id="source-select">
                             <option value="" selected>Все источники</option>
                             <optgroup label="Главные новости">
@@ -78,145 +85,143 @@
                             </optgroup>
                         </select>
                     </div>
-                    <div class="col-12 col-lg-6">
-                        <label for="topic-input" class="form-label">Поиск</label>
-                        <input type="text" class="form-control" id="topic-input" placeholder="Введите ключевые слова..." autocomplete="off" spellcheck="false">
+
+                    <div class="field-group field-query">
+                        <div class="search-input-wrapper">
+                            <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                            <input type="text" class="form-control" id="topic-input" placeholder="Поиск новостей... (нажмите /)" autocomplete="off" spellcheck="false">
+                        </div>
                     </div>
-                    <div class="col-12 col-lg-2">
-                        <button class="btn-search" id="search-button" type="submit">Найти</button>
-                        <button class="btn-refresh" id="refresh-button" type="button">Обновить</button>
+
+                    <div class="field-group field-buttons">
+                        <button class="btn-primary" id="search-button" type="submit">Найти</button>
+                        <button class="btn-secondary" id="refresh-button" type="button" title="Обновить выдачу">↻</button>
                     </div>
-                    <div class="toggles-container">
-                        <label class="toggle">
+                </div>
+
+                <div class="search-toggles-bar">
+                    <div class="toggles-group">
+                        <label class="toggle-pill">
                             <input type="checkbox" id="translate-toggle" checked>
-                            <span class="toggle__indicator"></span>
-                            <span class="toggle__label">Перевод на русский</span>
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-text">Перевод</span>
                         </label>
-                        <label class="toggle">
+                        <label class="toggle-pill">
                             <input type="checkbox" id="view-all-toggle">
-                            <span class="toggle__indicator"></span>
-                            <span class="toggle__label">Показать все</span>
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-text">Все материалы</span>
                         </label>
                     </div>
-                    <div class="col-12 search-panel__help">
-                        <p class="search-hint">Введите несколько слов через пробел — найдём материалы с любым из них</p>
-                        <div class="quick-topics" aria-label="Быстрые темы">
-                            <span class="quick-topics__label">Быстрый старт</span>
-                            <button type="button" class="topic-chip" data-quick-topic="Украина">Украина</button>
-                            <button type="button" class="topic-chip" data-quick-topic="Экономика">Экономика</button>
-                            <button type="button" class="topic-chip" data-quick-topic="Технологии">Технологии</button>
-                            <button type="button" class="topic-chip" data-quick-topic="Наука">Наука</button>
-                            <button type="button" class="topic-chip" data-quick-topic="Спорт">Спорт</button>
-                            <button type="button" class="topic-chip" data-quick-topic="Ближний Восток">Ближний Восток</button>
-                        </div>
-                        <section class="saved-searches-panel" aria-labelledby="saved-searches-title">
-                            <div class="saved-searches-panel__header">
-                                <div>
-                                    <p class="saved-searches__eyebrow" id="saved-searches-title">Сохранённые поиски</p>
-                                    <p class="saved-searches__text">Хранятся только в этом браузере и помогают быстро вернуться к нужной выдаче.</p>
-                                </div>
-                                <button type="button" class="state-action state-action--compact" id="save-search-button">Сохранить текущий поиск</button>
-                            </div>
-                            <div id="saved-searches-list" class="saved-searches" aria-live="polite"></div>
-                        </section>
-                    </div>
-                </form>
-            </section>
 
-            <section class="news-section">
-                <!-- Feed Controls: Categories and Grid/List view switcher -->
-                <div class="feed-controls-bar d-flex justify-content-between align-items-center flex-wrap gap-3 mb-4">
-                    <div class="category-tabs" role="tablist" aria-label="Категории новостей">
-                        <button type="button" class="category-tab active" role="tab" aria-selected="true" data-category="all">Все</button>
-                        <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="tech">Технологии</button>
-                        <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="business">Бизнес</button>
-                        <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="world">Мир</button>
-                        <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="science">Наука</button>
-                        <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="culture">Культура</button>
-                        <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="sports">Спорт</button>
+                    <div class="quick-chips-scroll" aria-label="Быстрые темы">
+                        <button type="button" class="chip-btn" data-quick-topic="Украина">Украина</button>
+                        <button type="button" class="chip-btn" data-quick-topic="Экономика">Экономика</button>
+                        <button type="button" class="chip-btn" data-quick-topic="Технологии">Технологии</button>
+                        <button type="button" class="chip-btn" data-quick-topic="ИИ">ИИ</button>
+                        <button type="button" class="chip-btn" data-quick-topic="Наука">Наука</button>
+                        <button type="button" class="chip-btn" data-quick-topic="Спорт">Спорт</button>
                     </div>
-                    <div class="layout-toggle-container d-flex align-items-center gap-2">
-                        <button type="button" id="stats-toggle-btn" class="stats-toggle-btn" title="Показать аналитику трендов" aria-label="Аналитика">
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+                </div>
+            </form>
+        </section>
+
+        <!-- Secondary collapsible tools -->
+        <section class="panels-container">
+            <details class="collapsible-panel" id="saved-searches-panel">
+                <summary class="panel-summary">
+                    <span class="summary-title">★ Сохранённые поиски</span>
+                    <button type="button" class="btn-sm" id="save-search-button">Сохранить этот поиск</button>
+                </summary>
+                <div class="panel-content">
+                    <div id="saved-searches-list" class="saved-searches-grid" aria-live="polite"></div>
+                </div>
+            </details>
+
+            <details class="collapsible-panel" id="favorites-panel">
+                <summary class="panel-summary">
+                    <span class="summary-title">🔖 Избранное (<span id="favorites-count">0</span>)</span>
+                </summary>
+                <div class="panel-content">
+                    <div id="favorites-list" class="favorites-grid" aria-live="polite"></div>
+                </div>
+            </details>
+        </section>
+
+        <!-- Feed section -->
+        <section class="news-feed-section">
+            <div class="feed-header-bar">
+                <div class="category-tabs" role="tablist" aria-label="Категории новостей">
+                    <button type="button" class="category-tab active" role="tab" aria-selected="true" data-category="all">Все</button>
+                    <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="tech">Технологии</button>
+                    <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="business">Бизнес</button>
+                    <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="world">Мир</button>
+                    <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="science">Наука</button>
+                    <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="culture">Культура</button>
+                    <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="sports">Спорт</button>
+                </div>
+
+                <div class="layout-controls">
+                    <button type="button" id="stats-toggle-btn" class="icon-btn" title="Аналитика трендов" aria-label="Аналитика">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+                    </button>
+                    <div class="view-switch-toggle">
+                        <button type="button" id="layout-grid-btn" class="layout-btn active" title="Вид сеткой" aria-label="Сетка">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
                         </button>
-                        <div class="view-switcher-group">
-                            <button type="button" id="layout-grid-btn" class="layout-btn active" title="Вид сеткой" aria-label="Сетка">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
-                            </button>
-                            <button type="button" id="layout-list-btn" class="layout-btn" title="Вид списком" aria-label="Список">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
-                            </button>
-                        </div>
+                        <button type="button" id="layout-list-btn" class="layout-btn" title="Вид списком" aria-label="Список">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+                        </button>
                     </div>
-                </div>
-
-                <!-- Stats Dashboard Panel -->
-                <div id="stats-dashboard" class="stats-dashboard d-none mb-4">
-                    <div class="stats-dashboard__header">
-                        <span class="stats-dashboard__title">Аналитика новостного потока за сегодня</span>
-                        <button type="button" class="stats-dashboard__close" id="stats-close-btn">&times;</button>
-                    </div>
-                    <div class="stats-dashboard__content row g-3">
-                        <div class="col-12 col-md-6">
-                            <div class="stats-card">
-                                <p class="stats-card__label">Топ ключевых слов</p>
-                                <div id="stats-keywords" class="stats-keywords-list"></div>
-                            </div>
-                        </div>
-                        <div class="col-12 col-md-6">
-                            <div class="stats-card">
-                                <p class="stats-card__label">Распределение по источникам</p>
-                                <div id="stats-sources" class="stats-sources-list"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div id="search-feedback" class="search-feedback" role="status" aria-live="polite" aria-atomic="true"></div>
-                <section class="favorites-panel" aria-labelledby="favorites-title">
-                    <div class="favorites-panel__header">
-                        <div>
-                            <p class="favorites__eyebrow" id="favorites-title">Избранное</p>
-                            <p class="favorites__text">Сохраняйте новости на потом. Закладки хранятся только в этом браузере.</p>
-                        </div>
-                        <span class="favorites-count" id="favorites-count">0 статей</span>
-                    </div>
-                    <div id="favorites-list" class="favorites-list" aria-live="polite"></div>
-                </section>
-                <div id="loading-indicator" class="loading-indicator d-none" aria-live="polite">
-                    <div class="spinner-border" role="status" aria-hidden="true"></div>
-                    <span class="loading-text">Загружаем новости...</span>
-                </div>
-                <div id="news-container">
-                    <!-- News items will be injected here by JavaScript -->
-                </div>
-            </section>
-
-            <footer class="note">
-                Источники: BBC, Al Jazeera, The Guardian, CNN, NPR, Reuters, TechCrunch, The Verge, Forbes и другие
-            </footer>
-        </div>
-    </main>
-
-    <!-- Modal for full news article -->
-    <div class="modal fade" id="news-modal" tabindex="-1" aria-labelledby="news-modal-label" aria-hidden="true">
-        <div class="modal-dialog modal-lg modal-dialog-centered">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="news-modal-label">Полная новость</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
-                </div>
-                <div class="modal-body" id="news-modal-body">
-                    <!-- Full news content will be injected here -->
-                </div>
-                <div class="modal-footer d-md-none">
-                    <button type="button" class="btn btn-secondary w-100" data-bs-dismiss="modal">Закрыть</button>
                 </div>
             </div>
-        </div>
-    </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js" integrity="sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI" crossorigin="anonymous"></script>
-    <script src="js/main.js"></script>
+            <!-- Stats Analytics Panel -->
+            <div id="stats-dashboard" class="stats-dashboard d-none">
+                <div class="stats-header">
+                    <span class="stats-title">Аналитика новостного потока</span>
+                    <button type="button" class="close-btn" id="stats-close-btn">&times;</button>
+                </div>
+                <div class="stats-grid">
+                    <div class="stats-card">
+                        <p class="stats-card-label">Топ ключевых слов</p>
+                        <div id="stats-keywords" class="stats-keywords-list"></div>
+                    </div>
+                    <div class="stats-card">
+                        <p class="stats-card-label">Распределение по источникам</p>
+                        <div id="stats-sources" class="stats-sources-list"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="search-feedback" class="search-feedback" role="status" aria-live="polite"></div>
+            
+            <div id="loading-indicator" class="loading-bar d-none" aria-live="polite">
+                <div class="progress-line"></div>
+            </div>
+
+            <div id="news-container" class="news-grid">
+                <!-- News items will be injected here -->
+            </div>
+        </section>
+
+        <footer class="app-footer">
+            <p>Источники: BBC, Al Jazeera, The Guardian, CNN, NPR, Reuters, TechCrunch, The Verge, Forbes и другие</p>
+        </footer>
+    </main>
+
+    <!-- Native HTML Dialog Modal for full news article -->
+    <dialog class="article-modal" id="news-modal">
+        <div class="modal-card">
+            <header class="modal-header">
+                <h3 class="modal-title" id="news-modal-label">Загрузка новости...</h3>
+                <button type="button" class="modal-close-btn" id="news-modal-close" aria-label="Закрыть">&times;</button>
+            </header>
+            <div class="modal-body" id="news-modal-body">
+                <!-- Content will be injected here -->
+            </div>
+        </div>
+    </dialog>
+
+    <script src="js/main.js" defer></script>
 </body>
 </html>

@@ -3,10 +3,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const searchButton = document.getElementById('search-button');
   const refreshButton = document.getElementById('refresh-button');
   const newsContainer = document.getElementById('news-container');
-  const newsModalElement = document.getElementById('news-modal');
-  const newsModal = newsModalElement ? new bootstrap.Modal(newsModalElement) : null;
+  
+  // Native HTML5 <dialog> modal
+  const newsModal = document.getElementById('news-modal');
+  const newsModalClose = document.getElementById('news-modal-close');
   const newsModalLabel = document.getElementById('news-modal-label');
   const newsModalBody = document.getElementById('news-modal-body');
+
   const sourceSelect = document.getElementById('source-select');
   const topicInput = document.getElementById('topic-input');
   const loadingIndicator = document.getElementById('loading-indicator');
@@ -22,6 +25,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const favoritesCountElement = document.getElementById('favorites-count');
   const favoritesStorageKey = 'news-aggregator.favorites';
   const maxFavorites = 24;
+
+  // Theme Toggle Elements
+  const themeToggleBtn = document.getElementById('theme-toggle-btn');
+
+  // Inline SVG Placeholder data-URI to replace external network requests (no picsum)
+  const SVG_PLACEHOLDER = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="800" height="500" viewBox="0 0 800 500"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="%231c1c1e"/><stop offset="100%" stop-color="%232c2c2e"/></linearGradient></defs><rect width="800" height="500" fill="url(%23g)"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="%238e8e93" font-family="-apple-system, sans-serif" font-size="28" font-weight="600">News Aggregator</text></svg>`;
 
   // Modern UI DOM references
   const categoryTabs = document.querySelectorAll('.category-tab');
@@ -46,12 +55,14 @@ document.addEventListener('DOMContentLoaded', () => {
     hour: '2-digit',
     minute: '2-digit'
   });
-  let activeSearchController = null;
 
-  // Modern UI states
+  let activeSearchController = null;
   let clientArticlesCache = [];
-  /** @type {Map<string, string>} Maps article key → fullText, kept out of DOM */
+  /** @type {Map<string, string>} Article key → fullText store */
   const fullTextStore = new Map();
+  /** @type {Set<string>} Memory cache of favorite article keys for O(1) checks */
+  let favoritesMemorySet = new Set();
+
   let currentCategory = 'all';
   let currentLayout = localStorage.getItem('news-aggregator.layout') || 'grid';
 
@@ -63,6 +74,34 @@ document.addEventListener('DOMContentLoaded', () => {
     culture: ['atlantic', 'newyorker'],
     sports: ['espn']
   };
+
+  // Initialize Theme
+  const savedTheme = localStorage.getItem('news-aggregator.theme');
+  if (savedTheme) {
+    document.documentElement.setAttribute('data-theme', savedTheme);
+  }
+  updateThemeIcons();
+
+  function updateThemeIcons() {
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark' ||
+      (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    
+    const sunIcon = themeToggleBtn?.querySelector('.theme-icon-sun');
+    const moonIcon = themeToggleBtn?.querySelector('.theme-icon-moon');
+    
+    if (sunIcon && moonIcon) {
+      sunIcon.classList.toggle('d-none', !isDark);
+      moonIcon.classList.toggle('d-none', isDark);
+    }
+  }
+
+  themeToggleBtn?.addEventListener('click', () => {
+    const current = document.documentElement.getAttribute('data-theme');
+    const next = current === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('news-aggregator.theme', next);
+    updateThemeIcons();
+  });
 
   function sanitizeString(str) {
     return typeof str === 'string' ? str : '';
@@ -140,7 +179,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (window.crypto?.randomUUID) {
       return `${prefix}-${window.crypto.randomUUID()}`;
     }
-
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
@@ -192,7 +230,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function getSourceLabel(source) {
     if (!source) return 'Все источники';
-
     const option = Array.from(sourceSelect?.options || []).find(item => item.value === source);
     return sanitizeString(option?.textContent?.trim() || source);
   }
@@ -207,15 +244,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const parts = [];
     const sourceLabel = getSourceLabel(savedSearch?.source);
     const translateLabel = savedSearch?.translate ? 'Перевод' : 'Оригинал';
-
-    // Always include source label (covers both query and source-only cases)
     parts.push(sourceLabel);
-
-    if (savedSearch?.viewAll) {
-      parts.push('Все материалы');
-    }
+    if (savedSearch?.viewAll) parts.push('Все материалы');
     parts.push(translateLabel);
-
     return parts.join(' · ');
   }
 
@@ -226,26 +257,17 @@ document.addEventListener('DOMContentLoaded', () => {
       : '';
     const parts = [];
 
-    if (savedAtLabel) {
-      parts.push(`Сохранено: ${savedAtLabel}`);
-    }
-    if (savedSearch?.query) {
-      parts.push(`Запрос: ${savedSearch.query}`);
-    }
-    if (savedSearch?.source) {
-      parts.push(`Источник: ${getSourceLabel(savedSearch.source)}`);
-    }
+    if (savedAtLabel) parts.push(`Сохранено: ${savedAtLabel}`);
+    if (savedSearch?.query) parts.push(`Запрос: ${savedSearch.query}`);
+    if (savedSearch?.source) parts.push(`Источник: ${getSourceLabel(savedSearch.source)}`);
     parts.push(savedSearch?.translate ? 'Перевод на русский' : 'Оригинал');
-    if (savedSearch?.viewAll) {
-      parts.push('Показаны все материалы');
-    }
+    if (savedSearch?.viewAll) parts.push('Показаны все материалы');
 
     return parts.join(' · ');
   }
 
   function updateSaveSearchButtonState() {
     if (!saveSearchButton) return;
-
     const currentState = getCurrentSearchState();
     const matchingSearch = findMatchingSavedSearch(currentState);
     const canSave = hasSavableSearchState(currentState);
@@ -259,13 +281,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderSavedSearches() {
     if (!savedSearchesContainer) return;
-
     const savedSearches = getSavedSearches();
     updateSaveSearchButtonState();
 
     if (!savedSearches.length) {
       savedSearchesContainer.innerHTML = `
-        <p class="saved-searches__empty">Пока ничего не сохранено. Нажмите кнопку справа, чтобы закрепить текущий поиск и возвращаться к нему одним кликом.</p>
+        <p class="saved-searches__empty">Пока ничего не сохранено. Нажмите кнопку выше, чтобы закрепить текущий поиск.</p>
       `;
       return;
     }
@@ -328,22 +349,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     storeSavedSearches(nextSavedSearches);
     renderSavedSearches();
-    searchFeedback.textContent = 'Поиск сохранён. Он доступен в блоке ниже.';
+    searchFeedback.textContent = 'Поиск сохранён.';
   }
 
   function applySavedSearch(savedSearch) {
-    if (topicInput) {
-      topicInput.value = savedSearch.query || '';
-    }
-    if (sourceSelect) {
-      sourceSelect.value = savedSearch.source || '';
-    }
-    if (translateToggle) {
-      translateToggle.checked = Boolean(savedSearch.translate);
-    }
-    if (viewAllToggle) {
-      viewAllToggle.checked = Boolean(savedSearch.viewAll);
-    }
+    if (topicInput) topicInput.value = savedSearch.query || '';
+    if (sourceSelect) sourceSelect.value = savedSearch.source || '';
+    if (translateToggle) translateToggle.checked = Boolean(savedSearch.translate);
+    if (viewAllToggle) viewAllToggle.checked = Boolean(savedSearch.viewAll);
 
     topicInput?.focus();
     topicInput?.select();
@@ -365,7 +378,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const publishedAt = sanitizeString(article?.publishedAt).trim();
     const title = sanitizeString(article?.title || article?.title_ru).trim();
 
-    if (id) return id;
+    if (id) return `${source}:${id}`;
     if (link) return `${source}|${link}`;
     return `${source}|${title}|${publishedAt}`;
   }
@@ -379,7 +392,7 @@ document.addEventListener('DOMContentLoaded', () => {
       snippet: sanitizeString(article?.snippet).trim(),
       snippetRu: sanitizeString(article?.snippetRu || article?.snippet_ru).trim(),
       link: safeExternalUrl(article?.link, ''),
-      imageUrl: safeExternalUrl(article?.imageUrl, ''),
+      imageUrl: safeExternalUrl(article?.imageUrl, SVG_PLACEHOLDER),
       source: sanitizeString(article?.source).trim(),
       sourceTitle: sanitizeString(article?.sourceTitle || article?.source).trim(),
       publishedAt: sanitizeString(article?.publishedAt).trim(),
@@ -389,14 +402,19 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function getFavoriteArticles() {
-    return readJsonList(favoritesStorageKey)
+    const list = readJsonList(favoritesStorageKey)
       .map(item => normalizeFavoriteArticle(item))
       .filter(item => item.key)
       .sort((left, right) => new Date(right.savedAt).getTime() - new Date(left.savedAt).getTime());
+    
+    // Refresh in-memory Set
+    favoritesMemorySet = new Set(list.map(item => item.key));
+    return list;
   }
 
   function storeFavoriteArticles(favoriteArticles) {
     writeJsonList(favoritesStorageKey, favoriteArticles.slice(0, maxFavorites));
+    favoritesMemorySet = new Set(favoriteArticles.map(item => item.key));
   }
 
   function findFavoriteArticle(articleKey) {
@@ -419,34 +437,13 @@ document.addEventListener('DOMContentLoaded', () => {
     return parts.join(' · ');
   }
 
-  function getFavoriteArticleTooltip(favoriteArticle) {
-    const savedAt = sanitizeString(favoriteArticle?.savedAt).trim();
-    const savedAtLabel = savedAt && !Number.isNaN(new Date(savedAt).getTime())
-      ? savedSearchTimeFormatter.format(new Date(savedAt))
-      : '';
-    const parts = [];
-
-    if (savedAtLabel) {
-      parts.push(`Добавлено: ${savedAtLabel}`);
-    }
-    if (favoriteArticle?.sourceTitle || favoriteArticle?.source) {
-      parts.push(`Источник: ${sanitizeString(favoriteArticle.sourceTitle || favoriteArticle.source)}`);
-    }
-    if (favoriteArticle?.publishedAt) {
-      parts.push(`Опубликовано: ${computeTimeMeta(favoriteArticle.publishedAt).absolute || favoriteArticle.publishedAt}`);
-    }
-    return parts.join(' · ');
-  }
-
   function updateFavoriteCount(count) {
     if (!favoritesCountElement) return;
-
-    favoritesCountElement.textContent = `${count} ${formatRussianCount(count, ['статья', 'статьи', 'статей'])}`;
+    favoritesCountElement.textContent = String(count);
   }
 
   function updateFavoriteButton(cardElement, isFavorite) {
     if (!cardElement) return;
-
     cardElement.classList.toggle('news-card--bookmarked', isFavorite);
     const button = cardElement.querySelector('[data-favorite-toggle]');
     if (!button) return;
@@ -459,22 +456,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function syncFavoriteButtonState(articleKey) {
     if (!newsContainer || !articleKey) return;
-
     const card = newsContainer.querySelector(`.news-card[data-article-key="${CSS.escape(articleKey)}"]`);
     if (!card) return;
-
-    updateFavoriteButton(card, Boolean(findFavoriteArticle(articleKey)));
+    updateFavoriteButton(card, favoritesMemorySet.has(articleKey));
   }
 
   function renderFavoritesPanel() {
     if (!favoritesListContainer) return;
-
     const favoriteArticles = getFavoriteArticles();
     updateFavoriteCount(favoriteArticles.length);
 
     if (!favoriteArticles.length) {
       favoritesListContainer.innerHTML = `
-        <p class="favorites-empty">Нажмите на ☆ в карточке новости, чтобы добавить ее в избранное и открыть позже.</p>
+        <p class="favorites-empty">Нажмите ☆ в карточке новости, чтобы сохранить ее на потом.</p>
       `;
       return;
     }
@@ -483,11 +477,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const articleKey = escapeHtml(favoriteArticle.key);
       const title = escapeHtml(getFavoriteArticleTitle(favoriteArticle));
       const meta = escapeHtml(getFavoriteArticleMeta(favoriteArticle));
-      const tooltip = escapeHtml(getFavoriteArticleTooltip(favoriteArticle));
-      const sourceSeed = sanitizeString(favoriteArticle.source || 'news');
-      const fallbackImage = `https://picsum.photos/seed/${encodeURIComponent(`${sourceSeed}-favorite`)}/160/160`;
-      const image = escapeHtml(safeExternalUrl(favoriteArticle.imageUrl, fallbackImage));
-      const safeFallback = escapeHtml(fallbackImage);
+      const image = escapeHtml(safeExternalUrl(favoriteArticle.imageUrl, SVG_PLACEHOLDER));
 
       return `
         <div class="favorite-item" data-favorite-key="${articleKey}">
@@ -495,9 +485,8 @@ document.addEventListener('DOMContentLoaded', () => {
             type="button"
             class="favorite-item__preview"
             data-favorite-open="${articleKey}"
-            title="${tooltip}"
           >
-            <img src="${image}" class="favorite-item__thumb" alt="${title}" onerror="this.onerror=null;this.src='${safeFallback}';">
+            <img src="${image}" class="favorite-item__thumb" alt="${title}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='${SVG_PLACEHOLDER}';">
             <span class="favorite-item__content">
               <span class="favorite-item__title">${title}</span>
               <span class="favorite-item__meta">${meta}</span>
@@ -507,7 +496,7 @@ document.addEventListener('DOMContentLoaded', () => {
             type="button"
             class="favorite-item__remove"
             data-favorite-remove="${articleKey}"
-            aria-label="Удалить из избранного «${title}»"
+            aria-label="Удалить «${title}»"
             title="Удалить из избранного"
           >×</button>
         </div>
@@ -515,29 +504,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }).join('');
   }
 
-  function buildFavoriteSnapshot(article) {
-    return normalizeFavoriteArticle({
-      ...article,
-      savedAt: new Date().toISOString()
-    });
-  }
-
   function toggleFavoriteArticle(article) {
     const articleKey = getArticleKey(article);
     if (!articleKey) return;
 
-    const existingFavorite = findFavoriteArticle(articleKey);
-    if (existingFavorite) {
+    if (favoritesMemorySet.has(articleKey)) {
       removeFavoriteArticle(articleKey, 'Статья удалена из избранного.');
       return;
     }
 
     const favorites = getFavoriteArticles();
-    const nextFavorite = buildFavoriteSnapshot(article);
-    const nextFavorites = [
-      nextFavorite,
-      ...favorites.filter(item => item.key !== articleKey)
-    ].slice(0, maxFavorites);
+    const nextFavorite = normalizeFavoriteArticle({ ...article, savedAt: new Date().toISOString() });
+    const nextFavorites = [nextFavorite, ...favorites.filter(item => item.key !== articleKey)].slice(0, maxFavorites);
 
     storeFavoriteArticles(nextFavorites);
     syncFavoriteButtonState(articleKey);
@@ -550,100 +528,101 @@ document.addEventListener('DOMContentLoaded', () => {
     storeFavoriteArticles(nextFavorites);
     syncFavoriteButtonState(articleKey);
     renderFavoritesPanel();
-    if (feedbackMessage) {
-      searchFeedback.textContent = feedbackMessage;
-    }
+    if (feedbackMessage) searchFeedback.textContent = feedbackMessage;
   }
 
+  // Open native HTML5 <dialog> modal
   async function openArticleModal(article) {
     if (!newsModal) return;
 
-    const fullText = sanitizeString(article?.fullText).trim();
+    const articleKey = getArticleKey(article);
+    const sourceKey = sanitizeString(article?.source).trim();
+    const idKey = sanitizeString(article?.id).trim();
+
+    let fullText = fullTextStore.get(articleKey) || sanitizeString(article?.fullText).trim();
     const translate = isTranslateEnabled();
-    const translatedFull = (fullText && translate)
-      ? await translateViaApi(fullText)
-      : (fullText || 'Полный текст недоступен для этой заметки.');
-    const title = sanitizeString(article?.title || article?.titleRu).trim() || 'Без названия';
-    const sourceTitle = sanitizeString(article?.sourceTitle || article?.source).trim() || 'Источник не указан';
-    const publishedAt = sanitizeString(article?.publishedAt).trim();
-    const timeMeta = computeTimeMeta(publishedAt);
-    const imageSrc = safeExternalUrl(article?.imageSrc || article?.imageUrl, '');
+
+    // Show initial skeleton in modal
+    const title = sanitizeString(article?.title || article?.title_ru || article?.titleRu).trim() || 'Загрузка...';
+    const sourceTitle = sanitizeString(article?.sourceTitle || article?.source).trim() || 'Источник';
+    const timeMeta = computeTimeMeta(article?.publishedAt);
+    const imageSrc = safeExternalUrl(article?.imageUrl || article?.imageSrc, SVG_PLACEHOLDER);
     const link = safeExternalUrl(article?.link, '#');
 
     newsModalLabel.textContent = title;
-    const safeImageSrc = escapeHtml(imageSrc || '');
-    const safeSourceTitle = escapeHtml(sourceTitle);
-    const safeAbsolute = escapeHtml(timeMeta.absolute);
-    const safeRelative = escapeHtml(timeMeta.relative);
-    const safeTranslatedFull = escapeHtml(translatedFull);
-    const safeLink = escapeHtml(link);
-    const safeAltTitle = escapeHtml(title);
-
     newsModalBody.innerHTML = `
       <div class="modal-article">
-        <div class="modal-article-media mb-3">
-          <img src="${safeImageSrc}" class="img-fluid modal-article-img" alt="${safeAltTitle}" loading="lazy">
-        </div>
+        ${imageSrc ? `<img src="${escapeHtml(imageSrc)}" class="modal-article-img" alt="${escapeHtml(title)}" loading="lazy">` : ''}
         <div class="modal-article-meta mb-3">
-          <span class="modal-article-source badge text-bg-dark">${safeSourceTitle}</span>
-          <span class="modal-article-time" title="${safeAbsolute}">${safeRelative}</span>
+          <span class="badge">${escapeHtml(sourceTitle)}</span>
+          <span>${escapeHtml(timeMeta.relative)}</span>
         </div>
-        <p class="modal-article-text">${safeTranslatedFull}</p>
-        <p><a href="${safeLink}" target="_blank" rel="noopener noreferrer">Читать в оригинале</a></p>
+        <p class="modal-article-text" id="modal-text-content">Загружаем текст статьи...</p>
+        <p><a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">Читать в оригинале ↗</a></p>
       </div>
     `;
 
-    newsModal.show();
+    newsModal.showModal();
+
+    // Fetch fullText from /api/article if not present in client memory
+    if (!fullText && sourceKey && idKey) {
+      try {
+        const resp = await fetch(`/api/article?source=${encodeURIComponent(sourceKey)}&id=${encodeURIComponent(idKey)}&translate=${translate}`);
+        const data = await resp.json();
+        if (data?.ok && data.article?.fullText) {
+          fullText = data.article.fullText_ru || data.article.fullText;
+          fullTextStore.set(articleKey, data.article.fullText);
+        }
+      } catch (err) {}
+    }
+
+    if (!fullText) {
+      fullText = article?.snippet_ru || article?.snippet || 'Полный текст недоступен для этой новости.';
+    } else if (translate && !article?.fullText_ru) {
+      fullText = await translateViaApi(fullText);
+    }
+
+    const textEl = document.getElementById('modal-text-content');
+    if (textEl) {
+      textEl.textContent = fullText;
+    }
   }
+
+  newsModalClose?.addEventListener('click', () => {
+    newsModal?.close();
+  });
+
+  newsModal?.addEventListener('click', (e) => {
+    if (e.target === newsModal) {
+      newsModal.close();
+    }
+  });
 
   function syncStateFromUrl() {
     const params = new URLSearchParams(window.location.search);
     const q = params.get('q');
     const source = params.get('source');
 
-    if (topicInput && q !== null) {
-      topicInput.value = q;
-    }
-
-    if (sourceSelect && source !== null) {
-      sourceSelect.value = source;
-    }
-
-    if (translateToggle) {
-      translateToggle.checked = parseBooleanParam(params.get('translate'), true);
-    }
-
-    if (viewAllToggle) {
-      viewAllToggle.checked = parseBooleanParam(params.get('view_all'), false);
-    }
+    if (topicInput && q !== null) topicInput.value = q;
+    if (sourceSelect && source !== null) sourceSelect.value = source;
+    if (translateToggle) translateToggle.checked = parseBooleanParam(params.get('translate'), true);
+    if (viewAllToggle) viewAllToggle.checked = parseBooleanParam(params.get('view_all'), false);
   }
 
   function syncUrlFromState({ query, source, translate, viewAll }) {
     const url = new URL(window.location.href);
 
-    if (query) {
-      url.searchParams.set('q', query);
-    } else {
-      url.searchParams.delete('q');
-    }
+    if (query) url.searchParams.set('q', query);
+    else url.searchParams.delete('q');
 
-    if (source) {
-      url.searchParams.set('source', source);
-    } else {
-      url.searchParams.delete('source');
-    }
+    if (source) url.searchParams.set('source', source);
+    else url.searchParams.delete('source');
 
-    if (translate) {
-      url.searchParams.delete('translate');
-    } else {
-      url.searchParams.set('translate', 'false');
-    }
+    if (!translate) url.searchParams.set('translate', 'false');
+    else url.searchParams.delete('translate');
 
-    if (viewAll) {
-      url.searchParams.set('view_all', 'true');
-    } else {
-      url.searchParams.delete('view_all');
-    }
+    if (viewAll) url.searchParams.set('view_all', 'true');
+    else url.searchParams.delete('view_all');
 
     const queryString = url.searchParams.toString();
     const nextUrl = queryString ? `${url.pathname}?${queryString}${url.hash}` : `${url.pathname}${url.hash}`;
@@ -659,38 +638,20 @@ document.addEventListener('DOMContentLoaded', () => {
       .replace(/'/g, '&#39;');
   }
 
-  function decodeURIComponentSafe(value) {
-    const safeValue = sanitizeString(value);
-    if (!safeValue) return '';
-
-    try {
-      return decodeURIComponent(safeValue);
-    } catch (error) {
-      return safeValue;
-    }
-  }
-
   function renderSkeletons(count = 6) {
     if (!newsContainer) return;
-
     const fragment = document.createDocumentFragment();
 
     for (let index = 0; index < count; index += 1) {
       const item = document.createElement('div');
       item.className = 'news-grid-item';
       item.innerHTML = `
-        <article class="news-card news-card--skeleton skeleton-card" aria-hidden="true">
-          <div class="news-card-media skeleton-block skeleton-media"></div>
+        <article class="news-card news-card--skeleton" aria-hidden="true">
+          <div class="news-card-media skeleton-media"></div>
           <div class="news-card-body">
-            <span class="skeleton-pill"></span>
-            <span class="skeleton-line skeleton-line--title"></span>
-            <span class="skeleton-line"></span>
-            <span class="skeleton-line skeleton-line--short"></span>
+            <div class="skeleton-line" style="width:70%;height:16px;"></div>
+            <div class="skeleton-line" style="width:90%;height:14px;margin-top:6px;"></div>
           </div>
-          <footer class="news-card-meta skeleton-footer">
-            <span class="skeleton-pill" style="width: 92px;"></span>
-            <span class="skeleton-pill" style="width: 68px;"></span>
-          </footer>
         </article>
       `;
       fragment.appendChild(item);
@@ -700,58 +661,24 @@ document.addEventListener('DOMContentLoaded', () => {
     newsContainer.appendChild(fragment);
   }
 
-  function renderStateCard({ eyebrow, title, text, actions = [] }) {
+  function renderEmptyState(query, source) {
     if (!newsContainer) return;
-
-    const actionsHtml = actions
-      .map(action => `<button type="button" class="state-action" data-state-action="${escapeHtml(action.id)}">${escapeHtml(action.label)}</button>`)
-      .join('');
-
     newsContainer.innerHTML = `
-      <div class="news-grid-item news-grid-item--full">
-        <section class="news-state">
-          <p class="news-state__eyebrow">${escapeHtml(eyebrow)}</p>
-          <h3 class="news-state__title">${escapeHtml(title)}</h3>
-          <p class="news-state__text">${escapeHtml(text)}</p>
-          ${actionsHtml ? `<div class="news-state__actions">${actionsHtml}</div>` : ''}
-        </section>
+      <div style="grid-column: 1 / -1; padding: 40px; text-align: center;">
+        <h3>Ничего не найдено</h3>
+        <p style="color: var(--text-secondary); margin-top: 8px;">Попробуйте изменить ключевые слова или сбросить фильтры.</p>
       </div>
     `;
   }
 
-  function renderEmptyState(query, source) {
-    const hasFilters = Boolean(query || source);
-    const title = hasFilters
-      ? 'По текущему запросу пока ничего не найдено'
-      : 'Пока нет новостей для показа';
-    const text = hasFilters
-      ? 'Попробуйте более широкий запрос, смените источник или выберите одну из быстрых тем выше.'
-      : 'Выберите тему, источник или нажмите на быстрый запрос, чтобы начать.';
-
-    const actions = [];
-    if (hasFilters) {
-      actions.push({ id: 'clear-filters', label: 'Сбросить фильтры' });
-    }
-    actions.push({ id: 'refresh-feed', label: 'Обновить ленту' });
-
-    renderStateCard({
-      eyebrow: 'Пустая выдача',
-      title,
-      text,
-      actions
-    });
-  }
-
   function renderErrorState(message) {
-    renderStateCard({
-      eyebrow: 'Ошибка загрузки',
-      title: 'Не удалось получить новости',
-      text: message,
-      actions: [
-        { id: 'retry-search', label: 'Повторить' },
-        { id: 'clear-filters', label: 'Сбросить фильтры' }
-      ]
-    });
+    if (!newsContainer) return;
+    newsContainer.innerHTML = `
+      <div style="grid-column: 1 / -1; padding: 40px; text-align: center;">
+        <h3>Ошибка загрузки</h3>
+        <p style="color: var(--text-secondary); margin-top: 8px;">${escapeHtml(message)}</p>
+      </div>
+    `;
   }
 
   function splitIntoTokens(query) {
@@ -762,27 +689,10 @@ document.addEventListener('DOMContentLoaded', () => {
       .filter(token => token.length > 2);
   }
 
-  function highlightMatches(text, tokens) {
-    const safeText = escapeHtml(text);
-    if (!safeText || !tokens.length) return safeText;
-    return tokens.reduce((acc, token) => {
-      const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(`(${escaped})`, 'gi');
-      return acc.replace(regex, '<mark class="news-highlight">$1</mark>');
-    }, safeText);
-  }
-
-  /**
-   * Highlight using pre-compiled regexes from renderArticles.
-   * Avoids constructing RegExp objects inside the per-card hot path.
-   * @param {string} text
-   * @param {{ token: string, re: RegExp }[]} regexes
-   */
   function highlightMatchesWithRegexes(text, regexes) {
     const safeText = escapeHtml(text);
     if (!safeText || !regexes.length) return safeText;
     return regexes.reduce((acc, { re }) => {
-      // Reset lastIndex to avoid stateful regex pitfalls
       re.lastIndex = 0;
       return acc.replace(re, '<mark class="news-highlight">$1</mark>');
     }, safeText);
@@ -810,20 +720,14 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
-    return {
-      relative,
-      absolute: absoluteTimeFormatter.format(parsed)
-    };
+    return { relative, absolute: absoluteTimeFormatter.format(parsed) };
   }
 
-  function setLoading(isLoading, skeletonCount = 6) {
+  function setLoading(isLoading) {
     if (!loadingIndicator) return;
     loadingIndicator.classList.toggle('d-none', !isLoading);
-    if (isLoading) {
-      loadingIndicator.setAttribute('aria-busy', 'true');
-      renderSkeletons(skeletonCount);
-    } else {
-      loadingIndicator.removeAttribute('aria-busy');
+    if (newsContainer) {
+      newsContainer.style.opacity = isLoading ? '0.6' : '1';
     }
   }
 
@@ -837,36 +741,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function translateViaApi(text) {
     const safeText = sanitizeString(text);
-    if (!safeText) return 'Полный текст недоступен для этой заметки.';
-
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 8000);
+    if (!safeText) return '';
 
     try {
       const resp = await fetch('/api/translate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: safeText, to: 'ru' }),
-        signal: controller.signal
+        body: JSON.stringify({ text: safeText, to: 'ru' })
       });
       const data = await resp.json();
-      if (data?.ok && data.translated) {
-        return data.translated;
-      }
-    } catch (error) {
-      console.warn('Translation API failed', error);
-    } finally {
-      window.clearTimeout(timeoutId);
-    }
+      if (data?.ok && data.translated) return data.translated;
+    } catch (error) {}
 
     return safeText;
   }
 
   function getReadingTime(text, isRussian = false) {
     const words = text ? text.split(/\s+/).length : 0;
-    const wpm = isRussian ? 160 : 220; // Russian readers average slower than English
-    const minutes = Math.ceil(words / wpm);
-    return minutes || 1;
+    const wpm = isRussian ? 160 : 220;
+    return Math.ceil(words / wpm) || 1;
   }
 
   function updateLayoutView() {
@@ -884,41 +777,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function buildStatsDashboard(articles) {
     if (!statsKeywords || !statsSources) return;
+    if (!Array.isArray(articles) || articles.length === 0) return;
 
-    if (!Array.isArray(articles) || articles.length === 0) {
-      statsKeywords.innerHTML = '<p class="text-muted small">Нет данных</p>';
-      statsSources.innerHTML = '<p class="text-muted small">Нет данных</p>';
-      return;
-    }
-
-    // 1. Top Keywords
-    const excludeWords = new Set([
-      'это', 'как', 'для', 'что', 'или', 'этот', 'эта', 'эти', 'все', 'под', 'над', 'был', 'была',
-      'the', 'and', 'for', 'with', 'about', 'from', 'this', 'that'
-    ]);
+    const excludeWords = new Set(['это', 'как', 'для', 'что', 'или', 'этот', 'эта', 'эти', 'все', 'под', 'над', 'the', 'and', 'for', 'with', 'about', 'from']);
     const wordFreq = {};
     articles.forEach(art => {
-      const text = `${art.title} ${art.snippet} ${art.title_ru || ''} ${art.snippet_ru || ''}`.toLowerCase();
+      const text = `${art.title} ${art.snippet} ${art.title_ru || ''}`.toLowerCase();
       const tokens = text.split(/[\s,.;:!?"'()\[\]{}<>/@#%^&*+=|~`\-_]+/)
         .map(t => t.trim())
         .filter(t => t.length > 4 && !excludeWords.has(t));
       
-      tokens.forEach(token => {
-        wordFreq[token] = (wordFreq[token] || 0) + 1;
-      });
+      tokens.forEach(token => { wordFreq[token] = (wordFreq[token] || 0) + 1; });
     });
 
-    const topKeywords = Object.entries(wordFreq)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10);
-
+    const topKeywords = Object.entries(wordFreq).sort((a, b) => b[1] - a[1]).slice(0, 10);
     statsKeywords.innerHTML = topKeywords.map(([word, count]) => `
       <button type="button" class="trend-keyword-badge" data-quick-topic="${escapeHtml(word)}">
-        #${escapeHtml(word)} <span class="trend-keyword-count">${count}</span>
+        #${escapeHtml(word)} <span>${count}</span>
       </button>
-    `).join('') || '<p class="text-muted small">Недостаточно данных для анализа</p>';
+    `).join('');
 
-    // Add click listeners to trend keywords dynamically
     statsKeywords.querySelectorAll('.trend-keyword-badge').forEach(badge => {
       badge.addEventListener('click', () => {
         if (topicInput) {
@@ -929,57 +807,37 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     });
 
-    // 2. Source distribution
     const sourceCount = {};
     articles.forEach(art => {
       const src = art.sourceTitle || art.source || 'Другие';
       sourceCount[src] = (sourceCount[src] || 0) + 1;
     });
 
-    const sortedSources = Object.entries(sourceCount)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5);
-
-    const maxCount = Math.max(...sortedSources.map(s => s[1]), 1);
-
-    statsSources.innerHTML = sortedSources.map(([src, count]) => {
-      const pct = (count / maxCount) * 100;
-      return `
-        <div class="source-stat-row">
-          <span class="source-stat-name">${escapeHtml(src)}</span>
-          <div class="source-stat-bar-container">
-            <div class="source-stat-bar" style="width: ${pct}%"></div>
-          </div>
-          <span class="source-stat-count">${count}</span>
-        </div>
-      `;
-    }).join('');
+    const sortedSources = Object.entries(sourceCount).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    statsSources.innerHTML = sortedSources.map(([src, count]) => `
+      <div style="font-size:12px;margin-bottom:4px;">
+        <span>${escapeHtml(src)}</span>: <strong>${count}</strong>
+      </div>
+    `).join('');
   }
 
   function renderArticles(articles, { query, source }) {
-    const messageParts = [];
     const highlightTokens = splitIntoTokens(query);
-    // Compile highlight regexes once for the whole render pass (not per-card)
     const highlightRegexes = highlightTokens.map(token => ({
       token,
       re: new RegExp(`(${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
     }));
     const translate = isTranslateEnabled();
 
-    // Cache original raw articles and populate fullText store
     if (articles && articles.length > 0) {
       clientArticlesCache = articles;
-      // Store full text in Map keyed by article key, keeping it out of the DOM
       articles.forEach(article => {
         const key = getArticleKey(article);
-        if (key && article.fullText) {
-          fullTextStore.set(key, article.fullText);
-        }
+        if (key && article.fullText) fullTextStore.set(key, article.fullText);
       });
       buildStatsDashboard(articles);
     }
 
-    // Apply category filter if not "all"
     let filteredArticles = articles;
     if (currentCategory !== 'all') {
       const allowedSources = CATEGORY_MAP[currentCategory] || [];
@@ -987,123 +845,62 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (!Array.isArray(filteredArticles) || filteredArticles.length === 0) {
-      if (query) {
-        searchFeedback.textContent = `Мы не нашли материалов по запросу «${query}». Попробуйте переформулировать или выбрать другой источник.`;
-      } else {
-        searchFeedback.textContent = 'Пока свежих новостей нет в выбранной категории. Попробуйте выбрать другую категорию.';
-      }
+      searchFeedback.textContent = query ? `Ничего не найдено по запросу «${query}».` : 'Нет материалов в выбранной категории.';
       renderEmptyState(query, source);
-      document.title = query ? `«${query}» — Новостной Агрегатор` : 'Новостной Агрегатор';
       return;
     }
 
-    messageParts.push(`Показаны ${filteredArticles.length} материалов`);
-    if (source) {
-      const selectedOption = sourceSelect?.selectedOptions?.[0]?.textContent?.trim();
-      if (selectedOption) {
-        messageParts.push(`из «${selectedOption}»`);
-      }
-    } else {
-      messageParts.push('из разных источников');
-    }
-    if (query) {
-      messageParts.push(`по запросу «${query}»`);
-    }
-    if (currentCategory !== 'all') {
-      const catLabel = document.querySelector(`.category-tab[data-category="${currentCategory}"]`)?.textContent;
-      if (catLabel) {
-        messageParts.push(`в категории «${catLabel}»`);
-      }
-    }
-    searchFeedback.textContent = `${messageParts.join(' ')}.`;
-    document.title = query ? `«${query}» — Новостной Агрегатор` : 'Новостной Агрегатор';
-
+    searchFeedback.textContent = `Показаны ${filteredArticles.length} материалов.`;
     newsContainer.innerHTML = '';
-    const favoriteArticles = getFavoriteArticles();
+    
+    // Ensure memory set is loaded
+    getFavoriteArticles();
+
     const fragment = document.createDocumentFragment();
     filteredArticles.forEach(article => {
-      fragment.appendChild(createCard(article, highlightRegexes, translate, favoriteArticles));
+      fragment.appendChild(createCard(article, highlightRegexes, translate));
     });
     newsContainer.appendChild(fragment);
-
-    // Apply list or grid layouts
     updateLayoutView();
   }
 
-  /**
-   * @param {object} article
-   * @param {{ token: string, re: RegExp }[]} highlightRegexes - pre-compiled per render pass
-   * @param {boolean} translate
-   * @param {object[]} favoriteArticles
-   */
-  function createCard(article, highlightRegexes, translate = true, favoriteArticles = []) {
+  function createCard(article, highlightRegexes, translate = true) {
     const col = document.createElement('div');
     col.className = 'news-grid-item';
 
     const articleKey = getArticleKey(article);
-    const isFavorite = favoriteArticles.some(item => item.key === articleKey);
-    const title = translate
-      ? sanitizeString(article.title_ru || article.title)
-      : sanitizeString(article.title);
-    const snippet = translate
-      ? sanitizeString(article.snippet_ru || article.snippet)
-      : sanitizeString(article.snippet);
+    const isFavorite = favoritesMemorySet.has(articleKey);
+    const title = translate ? sanitizeString(article.title_ru || article.title) : sanitizeString(article.title);
+    const snippet = translate ? sanitizeString(article.snippet_ru || article.snippet) : sanitizeString(article.snippet);
     const timeMeta = computeTimeMeta(article.publishedAt);
     const sourceTitle = sanitizeString(article.sourceTitle || article.source);
-    const imageSeed = sanitizeString(article.source || 'news');
-    const fallbackImage = `https://picsum.photos/seed/${encodeURIComponent(imageSeed)}/800/500`;
-    const image = safeExternalUrl(article.imageUrl, fallbackImage);
+    const image = safeExternalUrl(article.imageUrl, SVG_PLACEHOLDER);
 
-    // Use pre-compiled regexes (passed from renderArticles) — no regex construction here
     const highlightedTitle = highlightMatchesWithRegexes(title, highlightRegexes);
     const highlightedSnippet = highlightMatchesWithRegexes(snippet, highlightRegexes);
     const safeImage = escapeHtml(image);
-    const safeId = escapeHtml(article.id || '');
-    const safeSource = escapeHtml(article.source || '');
     const safeSourceTitle = escapeHtml(sourceTitle);
-    const safePublished = escapeHtml(article.publishedAt || '');
     const safeAlt = escapeHtml(title);
-    const safeLink = escapeHtml(safeExternalUrl(article.link, '#'));
     const safeArticleKey = escapeHtml(articleKey);
-    const safeFallback = escapeHtml(fallbackImage);
-    const favoriteLabel = isFavorite ? 'Убрать из избранного' : 'Добавить в избранное';
     const favoriteIcon = isFavorite ? '★' : '☆';
 
-    // Reading time — use translated snippet length as proxy for language
-    const readingText = article.fullText || snippet;
-    const readingTime = getReadingTime(readingText, translate);
-    const readingTimeHtml = `
-      <span class="news-meta-reading-time" title="Ориентировочное время чтения">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 3px; vertical-align: -1px;"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-        <span>${readingTime} мин</span>
-      </span>
-    `;
+    const readingTime = getReadingTime(snippet, translate);
 
-    // fullText is stored in fullTextStore (Map) — NOT in a data attribute
     col.innerHTML = `
       <article
         class="news-card${isFavorite ? ' news-card--bookmarked' : ''}"
         tabindex="0"
         role="button"
-        aria-label="${safeAlt}. Открыть полную новость"
         data-article-key="${safeArticleKey}"
-        data-id="${safeId}"
-        data-source="${safeSource}"
-        data-source-title="${safeSourceTitle}"
-        data-link="${safeLink}"
-        data-image-url="${safeImage}"
-        data-published="${safePublished}"
       >
         <div class="news-card-media">
           <button
             type="button"
             class="news-card-favorite"
             data-favorite-toggle="${safeArticleKey}"
-            aria-pressed="${isFavorite ? 'true' : 'false'}"
-            aria-label="${favoriteLabel}"
-            title="${favoriteLabel}"
-          ><span aria-hidden="true">${favoriteIcon}</span></button>
-          <img src="${safeImage}" class="news-card-img" alt="${safeAlt}" onerror="this.onerror=null;this.src='${safeFallback}';">
+            aria-pressed="${isFavorite}"
+          ><span>${favoriteIcon}</span></button>
+          <img src="${safeImage}" class="news-card-img" alt="${safeAlt}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='${SVG_PLACEHOLDER}';">
           <span class="news-card-badge">${safeSourceTitle}</span>
         </div>
         <div class="news-card-body">
@@ -1112,9 +909,9 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
         <footer class="news-card-meta">
           <span class="news-meta-source">${safeSourceTitle}</span>
-          <div class="d-flex align-items-center gap-2">
-            ${readingTimeHtml}
-            <span class="news-meta-time" title="${timeMeta.absolute}">${timeMeta.relative}</span>
+          <div>
+            <span>${readingTime} мин</span> · 
+            <span title="${timeMeta.absolute}">${timeMeta.relative}</span>
           </div>
         </footer>
       </article>
@@ -1125,8 +922,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function fetchAndDisplayNews(options = {}) {
     const { initial = false, refresh = false } = options;
-    const query = sanitizeString(topicInput.value).trim();
-    const source = sanitizeString(sourceSelect.value);
+    const query = sanitizeString(topicInput?.value).trim();
+    const source = sanitizeString(sourceSelect?.value);
     const viewAll = isViewAllEnabled();
     const translate = isTranslateEnabled();
 
@@ -1138,6 +935,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (source) params.set('source', source);
     if (viewAll) params.set('view_all', 'true');
     if (refresh) params.set('refresh', 'true');
+    if (currentCategory !== 'all') params.set('category', currentCategory);
 
     syncUrlFromState({ query, source, translate, viewAll });
 
@@ -1147,32 +945,23 @@ document.addEventListener('DOMContentLoaded', () => {
     const requestController = new AbortController();
     activeSearchController = requestController;
 
-    setLoading(true, viewAll ? 8 : 6);
-    if (refresh) {
-      searchFeedback.textContent = 'Обновляем ленту новостей...';
-    } else {
-      searchFeedback.textContent = initial ? 'Подбираем актуальные материалы...' : 'Ищем новости...';
-    }
+    setLoading(true);
+    searchFeedback.textContent = refresh ? 'Обновляем новости...' : 'Загрузка...';
 
     try {
       const response = await fetch(`/api/search?${params.toString()}`, {
         signal: requestController.signal
       });
-      if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`Status ${response.status}`);
       const data = await response.json();
       if (!data?.ok || !Array.isArray(data.results)) {
         throw new Error(data?.error || 'Не удалось получить данные');
       }
       renderArticles(data.results, { query, source });
     } catch (error) {
-      if (error.name === 'AbortError') {
-        return;
-      }
-      console.warn('Search API failed', error);
-      searchFeedback.textContent = 'Не удалось загрузить новости. Проверьте соединение и попробуйте еще раз.';
-      renderErrorState('Проверьте соединение и попробуйте еще раз. Если проблема повторяется, нажмите "Обновить ленту".');
+      if (error.name === 'AbortError') return;
+      searchFeedback.textContent = 'Ошибка соединения.';
+      renderErrorState('Проверьте подключение к сети и попробуйте снова.');
     } finally {
       if (activeSearchController === requestController) {
         activeSearchController = null;
@@ -1183,38 +972,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function getArticleFromCard(card) {
     if (!card) return null;
-
-    // Prefer the in-memory cache — avoids reading large data from DOM attributes
     const key = sanitizeString(card.dataset.articleKey).trim();
     if (key) {
       const cached = clientArticlesCache.find(a => getArticleKey(a) === key);
       if (cached) return cached;
     }
-
-    // Fallback: reconstruct from minimal DOM attributes (key fields only, no fullText)
-    return {
-      key,
-      id: sanitizeString(card.dataset.id).trim(),
-      title: sanitizeString(card.querySelector('.news-card-title')?.textContent).trim() || '',
-      titleRu: '',
-      snippet: '',
-      snippetRu: '',
-      fullText: fullTextStore.get(key) || '',
-      source: sanitizeString(card.dataset.source).trim(),
-      sourceTitle: sanitizeString(card.dataset.sourceTitle).trim(),
-      link: sanitizeString(card.dataset.link).trim(),
-      imageUrl: sanitizeString(card.dataset.imageUrl).trim(),
-      publishedAt: sanitizeString(card.dataset.published).trim()
-    };
+    return null;
   }
 
-  async function handleCardClick(event) {
-    const card = event.target.closest('.news-card');
-    if (!card || !newsModal || card.classList.contains('news-card--skeleton')) return;
-    event.preventDefault();
-    await openArticleModal(getArticleFromCard(card));
-  }
-
+  // Input Debounce set to 450ms
   const throttledFetch = (() => {
     let timeoutId = null;
     return () => {
@@ -1222,7 +988,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (timeoutId) clearTimeout(timeoutId);
       timeoutId = window.setTimeout(() => {
         fetchAndDisplayNews();
-      }, 220);
+      }, 450);
     };
   })();
 
@@ -1256,43 +1022,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
   sourceSelect?.addEventListener('change', () => {
     if (sourceSelect.value) {
-      categoryTabs.forEach(t => {
-        t.classList.toggle('active', t.dataset.category === 'all');
-        t.setAttribute('aria-selected', t.dataset.category === 'all' ? 'true' : 'false');
-      });
+      categoryTabs.forEach(t => t.classList.toggle('active', t.dataset.category === 'all'));
       currentCategory = 'all';
     }
     fetchAndDisplayNews();
   });
+
   quickTopicButtons.forEach(button => {
     button.addEventListener('click', () => {
       const quickTopic = sanitizeString(button.dataset.quickTopic).trim();
       if (!quickTopic || !topicInput) return;
-
       topicInput.value = quickTopic;
-      topicInput.focus();
-      topicInput.select();
       fetchAndDisplayNews();
     });
   });
 
   savedSearchesContainer?.addEventListener('click', event => {
-    const applyButton = event.target.closest('[data-saved-search-apply]');
-    if (applyButton) {
-      const savedSearchId = sanitizeString(applyButton.dataset.savedSearchApply).trim();
-      const savedSearch = getSavedSearches().find(item => item.id === savedSearchId);
-      if (savedSearch) {
-        applySavedSearch(savedSearch);
-      }
+    const applyBtn = event.target.closest('[data-saved-search-apply]');
+    if (applyBtn) {
+      const id = sanitizeString(applyBtn.dataset.savedSearchApply).trim();
+      const savedSearch = getSavedSearches().find(item => item.id === id);
+      if (savedSearch) applySavedSearch(savedSearch);
       return;
     }
-
-    const removeButton = event.target.closest('[data-saved-search-remove]');
-    if (removeButton) {
-      const savedSearchId = sanitizeString(removeButton.dataset.savedSearchRemove).trim();
-      if (savedSearchId) {
-        removeSavedSearch(savedSearchId);
-      }
+    const removeBtn = event.target.closest('[data-saved-search-remove]');
+    if (removeBtn) {
+      const id = sanitizeString(removeBtn.dataset.savedSearchRemove).trim();
+      if (id) removeSavedSearch(id);
     }
   });
 
@@ -1300,74 +1056,33 @@ document.addEventListener('DOMContentLoaded', () => {
     const favoriteToggle = event.target.closest('[data-favorite-toggle]');
     if (favoriteToggle) {
       const card = favoriteToggle.closest('.news-card');
-      if (card) {
-        toggleFavoriteArticle(getArticleFromCard(card));
-      }
+      if (card) toggleFavoriteArticle(getArticleFromCard(card));
       return;
     }
-
-    const stateAction = event.target.closest('[data-state-action]');
-    if (stateAction) {
-      const action = stateAction.dataset.stateAction;
-
-      if (action === 'clear-filters') {
-        if (topicInput) topicInput.value = '';
-        if (sourceSelect) sourceSelect.value = '';
-        if (viewAllToggle) viewAllToggle.checked = false;
-        categoryTabs.forEach(t => {
-          t.classList.toggle('active', t.dataset.category === 'all');
-          t.setAttribute('aria-selected', t.dataset.category === 'all' ? 'true' : 'false');
-        });
-        currentCategory = 'all';
-        fetchAndDisplayNews({ refresh: true });
-        return;
-      }
-
-      if (action === 'retry-search' || action === 'refresh-feed') {
-        fetchAndDisplayNews({ refresh: true });
-        return;
-      }
-    }
-
-    await handleCardClick(event);
-  });
-
-  newsContainer?.addEventListener('keydown', async event => {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    if (event.target instanceof Element && event.target.closest('button, a, input, textarea, select')) return;
-
     const card = event.target.closest('.news-card');
-    if (!card || card.classList.contains('news-card--skeleton')) return;
-
-    event.preventDefault();
-    await openArticleModal(getArticleFromCard(card));
+    if (card) {
+      await openArticleModal(getArticleFromCard(card));
+    }
   });
 
   favoritesListContainer?.addEventListener('click', async event => {
-    const openButton = event.target.closest('[data-favorite-open]');
-    if (openButton) {
-      const favoriteKey = sanitizeString(openButton.dataset.favoriteOpen).trim();
-      const favorite = findFavoriteArticle(favoriteKey);
-      if (favorite) {
-        await openArticleModal(favorite);
-      }
+    const openBtn = event.target.closest('[data-favorite-open]');
+    if (openBtn) {
+      const key = sanitizeString(openBtn.dataset.favoriteOpen).trim();
+      const fav = findFavoriteArticle(key);
+      if (fav) await openArticleModal(fav);
       return;
     }
-
-    const removeButton = event.target.closest('[data-favorite-remove]');
-    if (removeButton) {
-      const favoriteKey = sanitizeString(removeButton.dataset.favoriteRemove).trim();
-      if (favoriteKey) {
-        removeFavoriteArticle(favoriteKey);
-      }
+    const removeBtn = event.target.closest('[data-favorite-remove]');
+    if (removeBtn) {
+      const key = sanitizeString(removeBtn.dataset.favoriteRemove).trim();
+      if (key) removeFavoriteArticle(key);
     }
   });
 
-  // Translate toggle: only change display language — no server round-trip needed
   translateToggle?.addEventListener('change', () => {
     updateSaveSearchButtonState();
     if (clientArticlesCache.length > 0) {
-      // Re-render from the in-memory cache with the updated language setting
       renderArticles(clientArticlesCache, {
         query: sanitizeString(topicInput?.value).trim(),
         source: sanitizeString(sourceSelect?.value).trim()
@@ -1387,23 +1102,9 @@ document.addEventListener('DOMContentLoaded', () => {
       event.preventDefault();
       topicInput?.focus();
       topicInput?.select();
-      return;
-    }
-
-    if (event.key === 'Escape' && document.activeElement === topicInput && topicInput?.value) {
-      event.preventDefault();
-      topicInput.value = '';
-      fetchAndDisplayNews();
     }
   });
 
-  window.addEventListener('popstate', () => {
-    syncStateFromUrl();
-    updateSaveSearchButtonState();
-    fetchAndDisplayNews();
-  });
-
-  // Layout grid/list switch listeners
   layoutGridBtn?.addEventListener('click', () => {
     currentLayout = 'grid';
     localStorage.setItem('news-aggregator.layout', 'grid');
@@ -1416,7 +1117,6 @@ document.addEventListener('DOMContentLoaded', () => {
     updateLayoutView();
   });
 
-  // Stats Dashboard Toggle
   statsToggleBtn?.addEventListener('click', () => {
     const isHidden = statsDashboard?.classList.toggle('d-none');
     statsToggleBtn?.classList.toggle('active', !isHidden);
@@ -1427,24 +1127,16 @@ document.addEventListener('DOMContentLoaded', () => {
     statsToggleBtn?.classList.remove('active');
   });
 
-  // Category Tabs click listeners
   categoryTabs.forEach(tab => {
     tab.addEventListener('click', () => {
-      categoryTabs.forEach(t => {
-        t.classList.remove('active');
-        t.setAttribute('aria-selected', 'false');
-      });
+      categoryTabs.forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
-      tab.setAttribute('aria-selected', 'true');
-      
       currentCategory = tab.dataset.category || 'all';
 
-      // If category is selected, clear source selector to avoid conflicting filters
       if (currentCategory !== 'all' && sourceSelect) {
         sourceSelect.value = '';
       }
-      
-      // If we have cached articles, render instantly!
+
       if (clientArticlesCache && clientArticlesCache.length > 0) {
         renderArticles(clientArticlesCache, {
           query: sanitizeString(topicInput?.value).trim(),

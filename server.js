@@ -5,16 +5,14 @@
  * - Service-based design (CacheService, TranslationService, RSSService)
  * - Dependency Injection principles
  * - Centralized Configuration
- * - Robust Error Handling
+ * - Robust Error Handling & SWR Caching
  */
 
 const express = require('express');
 const cors = require('cors');
-const fetch = require('node-fetch');
 const dotenv = require('dotenv');
 const path = require('path');
 const xml2js = require('xml2js');
-const { EventEmitter } = require('events');
 
 // Load environment variables
 dotenv.config();
@@ -26,15 +24,18 @@ const CONFIG = {
   PORT: process.env.PORT || 3000,
   ALLOWED_ORIGIN: process.env.ALLOWED_ORIGIN || '*',
   CACHE: {
-    RSS_TTL: 5 * 60 * 1000, // 5 minutes
+    RSS_TTL: 5 * 60 * 1000, // 5 minutes fresh
+    RSS_STALE_WINDOW: 20 * 60 * 1000, // +20 minutes stale window (SWR)
     TRANSLATION_TTL: 24 * 60 * 60 * 1000, // 24 hours
+    SEARCH_TTL: 60 * 1000, // 60 seconds
     RSS_LIMIT: 100,
-    TRANSLATION_LIMIT: 1000,
+    TRANSLATION_LIMIT: 2000,
+    SEARCH_LIMIT: 200,
   },
   FETCH: {
-    TIMEOUT: 10000, // 10 seconds
+    TIMEOUT: 8000, // 8 seconds
     MAX_CONCURRENT_TRANSLATIONS: 5,
-    MAX_CONCURRENT_FEEDS: 10,
+    MAX_CONCURRENT_FEEDS: 15,
   },
   RATE_LIMIT: {
     WINDOW_MS: 60 * 1000, // 1 minute
@@ -84,13 +85,17 @@ const SOURCES = {
 };
 
 /**
- * Utility: LRU Cache Implementation
- * Optimized for O(1) access and eviction using JS Map iteration order.
+ * Default tier for instant homepage loading
+ */
+const TOP_SOURCES = ['bbc', 'nyt', 'guardian', 'cnn', 'npr', 'techcrunch', 'verge', 'reuters_world', 'forbes', 'aljazeera'];
+
+/**
+ * Utility: LRU Cache Implementation with SWR Support
  */
 class LRUCache {
   constructor(limit, ttlFn = null) {
     this.limit = limit;
-    this.ttlFn = ttlFn; // Optional function to calculate TTL per item or global TTL logic
+    this.ttlFn = ttlFn;
     this.cache = new Map();
     this._pruneInterval = setInterval(() => this.pruneExpired(), 5 * 60 * 1000).unref();
   }
@@ -98,30 +103,56 @@ class LRUCache {
   get(key) {
     if (!this.cache.has(key)) return null;
     const item = this.cache.get(key);
+    const now = Date.now();
 
-    // Check expiration
-    if (item.expires && item.expires < Date.now()) {
+    const cutoff = item.staleUntil || item.expires;
+    if (cutoff && cutoff < now) {
       this.cache.delete(key);
       return null;
     }
 
-    // Refresh LRU position: delete and re-insert
     this.cache.delete(key);
     this.cache.set(key, item);
     return item.value;
   }
 
-  set(key, value, ttl = 0) {
+  /**
+   * Stale-While-Revalidate getter
+   * @returns {{ status: 'fresh'|'stale'|'miss', value: any }}
+   */
+  getSWR(key) {
+    if (!this.cache.has(key)) return { status: 'miss', value: null };
+    const item = this.cache.get(key);
+    const now = Date.now();
+
+    if (item.expires && item.expires > now) {
+      this.cache.delete(key);
+      this.cache.set(key, item);
+      return { status: 'fresh', value: item.value };
+    }
+
+    if (item.staleUntil && item.staleUntil > now) {
+      this.cache.delete(key);
+      this.cache.set(key, item);
+      return { status: 'stale', value: item.value };
+    }
+
+    this.cache.delete(key);
+    return { status: 'miss', value: null };
+  }
+
+  set(key, value, ttl = 0, staleWindowMs = 0) {
     if (this.cache.has(key)) {
       this.cache.delete(key);
     } else if (this.cache.size >= this.limit) {
-      // Evict oldest (first inserted)
       const oldestKey = this.cache.keys().next().value;
       this.cache.delete(oldestKey);
     }
 
-    const expires = ttl > 0 ? Date.now() + ttl : (this.ttlFn ? Date.now() + this.ttlFn() : 0);
-    this.cache.set(key, { value, expires });
+    const now = Date.now();
+    const expires = ttl > 0 ? now + ttl : (this.ttlFn ? now + this.ttlFn() : 0);
+    const staleUntil = expires > 0 && staleWindowMs > 0 ? expires + staleWindowMs : 0;
+    this.cache.set(key, { value, expires, staleUntil });
   }
 
   delete(key) {
@@ -136,24 +167,23 @@ class LRUCache {
     return this.cache.size;
   }
 
-  // Periodic cleanup for expired items without access
   pruneExpired() {
     const now = Date.now();
     for (const [key, item] of this.cache.entries()) {
-      if (item.expires && item.expires < now) {
+      const cutoff = item.staleUntil || item.expires;
+      if (cutoff && cutoff < now) {
         this.cache.delete(key);
       }
     }
   }
 
-  // Stop background pruning (useful in tests)
   destroy() {
     clearInterval(this._pruneInterval);
   }
 }
 
 /**
- * Utility: Rate Limiter Middleware
+ * Rate Limiter Middleware
  */
 class RateLimiter {
   constructor(windowMs, max) {
@@ -172,7 +202,6 @@ class RateLimiter {
     }
   }
 
-  // Stop background pruning (useful in tests)
   destroy() {
     clearInterval(this._pruneInterval);
   }
@@ -226,6 +255,11 @@ class TranslationService {
     });
   }
 
+  getCached(text, targetLang = 'ru') {
+    if (!text) return '';
+    return this.cache.get(`${targetLang}|${text}`);
+  }
+
   async processQueue() {
     if (this.queue.length === 0 || this.activeWorkers >= this.maxWorkers) return;
 
@@ -238,7 +272,7 @@ class TranslationService {
       task.resolve(result);
     } catch (error) {
       console.error('Translation failed:', error.message);
-      task.resolve(task.text); // Fallback to original text
+      task.resolve(task.text);
     } finally {
       this.activeWorkers--;
       this.processQueue();
@@ -265,7 +299,7 @@ class TranslationService {
 }
 
 /**
- * Helpers for RSS parsing to avoid recreation on every item loop
+ * RSS parsing utilities
  */
 const getText = (val) => {
   if (!val) return '';
@@ -287,17 +321,28 @@ class RSSService {
   constructor(cache) {
     this.cache = cache;
     this.pendingRequests = new Map();
+    this.articleStore = new Map(); // Fulltext store out of search list payloads
     this.xmlParser = new xml2js.Parser({ explicitArray: false, mergeAttrs: true, trim: true });
   }
 
-  async fetchFeed(sourceKey, url) {
+  async fetchFeed(sourceKey, url, options = {}) {
     if (!url) return [];
+    const { forceRefresh = false } = options;
 
-    // Check Cache
-    const cached = this.cache.get(url);
-    if (cached) return cached;
+    if (!forceRefresh) {
+      const swr = this.cache.getSWR(url);
+      if (swr.status === 'fresh') return swr.value;
+      if (swr.status === 'stale') {
+        // Non-blocking background revalidation
+        this._revalidateFeed(sourceKey, url).catch(() => {});
+        return swr.value;
+      }
+    }
 
-    // Check Pending Request (Request Deduplication)
+    return this._revalidateFeed(sourceKey, url);
+  }
+
+  async _revalidateFeed(sourceKey, url) {
     if (this.pendingRequests.has(url)) {
       return this.pendingRequests.get(url);
     }
@@ -314,11 +359,11 @@ class RSSService {
         const parsed = await this.xmlParser.parseStringPromise(xml);
         const articles = this._normalizeFeed(sourceKey, parsed);
 
-        this.cache.set(url, articles, CONFIG.CACHE.RSS_TTL);
+        this.cache.set(url, articles, CONFIG.CACHE.RSS_TTL, CONFIG.CACHE.RSS_STALE_WINDOW);
         return articles;
       } catch (error) {
         console.error(`Error fetching feed ${sourceKey}: ${error.message}`);
-        return [];
+        return this.cache.get(url) || [];
       } finally {
         this.pendingRequests.delete(url);
       }
@@ -343,13 +388,11 @@ class RSSService {
     const title = stripHtml(getText(item.title));
     const description = stripHtml(getText(item.description) || getText(item.summary) || getText(item['media:description']) || getText(item['content:encoded']));
 
-    // Extract Link
     let link = '';
     if (typeof item.link === 'string') link = item.link;
     else if (item.link?.href) link = item.link.href;
     else if (Array.isArray(item.link)) link = item.link.find(l => l.type === 'text/html' || !l.type)?.href || item.link[0]?.href || '';
 
-    // Extract Image
     let imageUrl = null;
     const media = item['media:content'] || item['media:thumbnail'] || item['media:group']?.['media:content'];
     const enclosure = item.enclosure;
@@ -359,7 +402,6 @@ class RSSService {
     else if (media) imageUrl = findUrl(media);
     else if (enclosure) imageUrl = findUrl(Array.isArray(enclosure) ? enclosure[0] : enclosure);
 
-    // Dates
     const pubDateStr = item.pubDate || item.published || item.updated || item.date;
     const pubDate = pubDateStr ? new Date(pubDateStr) : null;
     const publishedAt = pubDate && !isNaN(pubDate) ? pubDate.toISOString() : null;
@@ -367,9 +409,11 @@ class RSSService {
 
     const id = getText(item.guid) || getText(item.id) || link || `${sourceKey}-${publishedAtMs}-${index}`;
 
-    // Full text (truncated)
     const rawFull = getText(item['content:encoded']) || description || '';
-    const fullText = stripHtml(rawFull).substring(0, 4000); // Limit size
+    const fullText = stripHtml(rawFull).substring(0, 4000);
+
+    const articleKey = `${sourceKey}:${id}`;
+    this.articleStore.set(articleKey, fullText.length > 3 ? fullText : description);
 
     return {
       id,
@@ -379,29 +423,49 @@ class RSSService {
       snippet: description || '(No Description)',
       link,
       imageUrl,
-      fullText: fullText.length > 3 ? fullText : description,
       publishedAt,
       publishedAtMs
     };
   }
+
+  getFullText(sourceKey, id) {
+    return this.articleStore.get(`${sourceKey}:${id}`) || null;
+  }
 }
 
 /**
- * Service: Search Logic
+ * Service: Search Logic with LRU Result Cache & Tiered Feeds
  */
 class SearchService {
   constructor(rssService, translationService) {
     this.rssService = rssService;
     this.translationService = translationService;
+    this.searchCache = new LRUCache(CONFIG.CACHE.SEARCH_LIMIT);
   }
 
   async search(query, sourceKey, options = {}) {
-    const { viewAll, refresh } = options;
+    const { viewAll, refresh, category } = options;
+    const normQuery = (query || '').trim().toLowerCase();
 
-    // Determine sources
-    const sources = sourceKey && SOURCES[sourceKey] ? [sourceKey] : Object.keys(SOURCES);
+    // Check search results cache if not refreshing
+    const cacheKey = `search:${sourceKey || 'all'}:${normQuery}:${Boolean(viewAll)}:${category || 'all'}`;
+    if (!refresh) {
+      const cached = this.searchCache.get(cacheKey);
+      if (cached) return cached;
+    }
 
-    // Invalidate only the requested sources so other users are unaffected
+    // Determine sources to query
+    let sources;
+    if (sourceKey && SOURCES[sourceKey]) {
+      sources = [sourceKey];
+    } else if (normQuery || viewAll || category) {
+      sources = Object.keys(SOURCES);
+    } else {
+      // Default light tier for instant homepage loading
+      sources = TOP_SOURCES;
+    }
+
+    // Invalidate cached feeds if force refresh requested
     if (refresh) {
       sources.forEach(key => {
         const url = SOURCES[key]?.url;
@@ -409,13 +473,13 @@ class SearchService {
       });
     }
 
-    // Fetch feed sources with a concurrency limit
+    // Fetch feeds with concurrency limit
     const allArticles = [];
     const concurrencyLimit = CONFIG.FETCH.MAX_CONCURRENT_FEEDS;
     for (let i = 0; i < sources.length; i += concurrencyLimit) {
       const chunk = sources.slice(i, i + concurrencyLimit);
       const results = await Promise.all(
-        chunk.map(key => this.rssService.fetchFeed(key, SOURCES[key].url))
+        chunk.map(key => this.rssService.fetchFeed(key, SOURCES[key].url, { forceRefresh: refresh }))
       );
       allArticles.push(...results.flat());
     }
@@ -429,11 +493,11 @@ class SearchService {
     for (const article of allArticles) {
       const cleanLink = (article.link || '').toLowerCase().replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
       const normTitle = (article.title || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
-      
+
       if ((cleanLink && seenLinks.has(cleanLink)) || (normTitle && seenTitles.has(normTitle))) {
         continue;
       }
-      
+
       deduplicatedArticles.push(article);
       if (cleanLink) seenLinks.add(cleanLink);
       if (normTitle) seenTitles.add(normTitle);
@@ -441,13 +505,16 @@ class SearchService {
 
     // Filtering and Scoring
     let results = deduplicatedArticles;
-    if (query) {
-      const translatedQuery = await this.translationService.translate(query, 'en');
-      const tokens = this._tokenize(query).concat(this._tokenize(translatedQuery));
+    if (normQuery) {
+      let translatedQuery = '';
+      try {
+        translatedQuery = await this.translationService.translate(normQuery, 'en');
+      } catch (err) {}
+
+      const tokens = this._tokenize(normQuery).concat(this._tokenize(translatedQuery));
       const uniqueTokens = [...new Set(tokens)];
 
       if (uniqueTokens.length > 0) {
-        // Compile regexes once per query, not inside _score
         const regexes = uniqueTokens.map(t => new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu'));
 
         results = deduplicatedArticles
@@ -459,7 +526,12 @@ class SearchService {
     }
 
     const limit = viewAll ? CONFIG.SEARCH.MAX_RESULTS_VIEW_ALL : CONFIG.SEARCH.MAX_RESULTS_DEFAULT;
-    return results.slice(0, limit);
+    const finalResults = results.slice(0, limit);
+
+    // Save to search cache
+    this.searchCache.set(cacheKey, finalResults, CONFIG.CACHE.SEARCH_TTL);
+
+    return finalResults;
   }
 
   _tokenize(text) {
@@ -493,18 +565,17 @@ const rssService = new RSSService(rssCache);
 const searchService = new SearchService(rssService, translationService);
 
 /**
- * Background scheduler to pre-fetch feeds and pre-translate top articles
+ * Background pre-fetch & pre-translation scheduler
  */
 async function startBackgroundJobs() {
   const fetchAndCacheAll = async () => {
     console.log('[Background Job] Starting RSS pre-fetch and pre-translation...');
     const start = Date.now();
     const keys = Object.keys(SOURCES);
-    
-    // Fetch all feeds in chunks to respect concurrency limits
+
     const concurrencyLimit = CONFIG.FETCH.MAX_CONCURRENT_FEEDS;
     const allArticles = [];
-    
+
     for (let i = 0; i < keys.length; i += concurrencyLimit) {
       const chunk = keys.slice(i, i + concurrencyLimit);
       const results = await Promise.all(
@@ -513,33 +584,25 @@ async function startBackgroundJobs() {
       allArticles.push(...results.flat());
     }
 
-    // Sort by date to find the most recent ones across all sources
     allArticles.sort((a, b) => b.publishedAtMs - a.publishedAtMs);
+    const topArticlesToTranslate = allArticles.slice(0, 30);
 
-    // To prevent hitting google translate API limits too hard, we only pre-translate the top 3 items from each source or top 40 overall
-    const topArticlesToTranslate = allArticles.slice(0, 40);
-    
     let translatedCount = 0;
     await Promise.all(topArticlesToTranslate.map(async (item) => {
-      // Trigger background translation (which puts them into translation cache)
       try {
         await Promise.all([
           translationService.translate(item.title, 'ru'),
           translationService.translate(item.snippet, 'ru')
         ]);
         translatedCount++;
-      } catch (err) {
-        // ignore translate error
-      }
+      } catch (err) {}
     }));
 
     console.log(`[Background Job] Completed in ${Date.now() - start}ms. Pre-translated: ${translatedCount} articles. Cached feeds: ${rssCache.size}.`);
   };
 
-  // Run initial fetch
   fetchAndCacheAll().catch(err => console.error('[Background Job] Initial run error:', err));
 
-  // Schedule every 5 minutes
   setInterval(() => {
     fetchAndCacheAll().catch(err => console.error('[Background Job] Scheduled run error:', err));
   }, 5 * 60 * 1000).unref();
@@ -573,7 +636,7 @@ app.use((req, res, next) => {
     'Content-Security-Policy',
     "default-src 'self'; " +
     "script-src 'self' https://cdn.jsdelivr.net; " +
-    "style-src 'self' https://cdn.jsdelivr.net https://fonts.googleapis.com; " +
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; " +
     "font-src 'self' https://fonts.gstatic.com; " +
     "img-src 'self' data: https:; " +
     "connect-src 'self';"
@@ -582,9 +645,11 @@ app.use((req, res, next) => {
 });
 
 app.use('/api/', rateLimiter.middleware());
-app.use('/css', express.static(path.join(__dirname, 'css'), { fallthrough: false }));
-app.use('/js', express.static(path.join(__dirname, 'js'), { fallthrough: false }));
-app.use('/fonts', express.static(path.join(__dirname, 'fonts'), { fallthrough: false }));
+
+// Serve static assets with 7-day Cache-Control header
+const staticOptions = { maxAge: '7d', immutable: true, fallthrough: true };
+app.use('/css', express.static(path.join(__dirname, 'css'), staticOptions));
+app.use('/js', express.static(path.join(__dirname, 'js'), staticOptions));
 
 // API Routes
 app.get('/health', (req, res) => {
@@ -593,12 +658,14 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     cache: {
       rss: rssCache.size,
-      translation: translationCache.size
+      translation: translationCache.size,
+      search: searchService.searchCache.size
     }
   });
 });
 
 app.get('/api/sources', (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=86400');
   res.json({
     ok: true,
     sources: Object.entries(SOURCES).map(([id, { title }]) => ({ id, title }))
@@ -607,7 +674,7 @@ app.get('/api/sources', (req, res) => {
 
 app.get('/api/search', async (req, res) => {
   try {
-    const { q, source, view_all, refresh } = req.query;
+    const { q, source, view_all, refresh, category } = req.query;
     const query = typeof q === 'string' ? q.trim() : '';
     const sourceKey = typeof source === 'string' ? source.trim() : '';
 
@@ -627,34 +694,65 @@ app.get('/api/search', async (req, res) => {
 
     const results = await searchService.search(query, sourceKey, {
       viewAll: view_all === 'true',
-      refresh: refresh === 'true'
+      refresh: refresh === 'true',
+      category: typeof category === 'string' ? category.trim() : 'all'
     });
 
-    const resultsToTranslate = results.slice(0, CONFIG.SEARCH.MAX_TRANSLATED_RESULTS);
-    const resultsRest = results.slice(CONFIG.SEARCH.MAX_TRANSLATED_RESULTS);
+    // Non-blocking translation enrichment
+    const enrichedResults = results.map(item => {
+      const titleRu = translationService.getCached(item.title, 'ru');
+      const snippetRu = translationService.getCached(item.snippet, 'ru');
 
-    const translatedResults = await Promise.all(resultsToTranslate.map(async item => {
-      try {
-        const [titleRu, snippetRu] = await Promise.all([
-          translationService.translate(item.title, 'ru'),
-          translationService.translate(item.snippet, 'ru')
-        ]);
-        return { ...item, title_ru: titleRu, snippet_ru: snippetRu };
-      } catch (e) {
-        return { ...item, title_ru: item.title, snippet_ru: item.snippet }; // Fallback
-      }
-    }));
+      // Trigger background translation for missing items without awaiting
+      if (!titleRu) translationService.translate(item.title, 'ru').catch(() => {});
+      if (!snippetRu) translationService.translate(item.snippet, 'ru').catch(() => {});
 
-    const finalResults = [...translatedResults, ...resultsRest];
+      return {
+        ...item,
+        title_ru: titleRu || null,
+        snippet_ru: snippetRu || null
+      };
+    });
 
-    res.json({ ok: true, results: finalResults, count: finalResults.length });
+    res.json({ ok: true, results: enrichedResults, count: enrichedResults.length });
   } catch (error) {
     console.error('Search API Error:', error);
     res.status(500).json({ ok: false, error: 'Internal Server Error' });
   }
 });
 
-// Allowed target languages for the /api/translate endpoint
+// Single article details route (loads full text & translates on demand)
+app.get('/api/article', async (req, res) => {
+  try {
+    const { source, id, translate } = req.query;
+    if (!source || !id) {
+      return res.status(400).json({ ok: false, error: 'Source and id required' });
+    }
+
+    const fullText = rssService.getFullText(String(source), String(id));
+    let fullTextRu = null;
+
+    if (fullText && translate === 'true') {
+      try {
+        fullTextRu = await translationService.translate(fullText, 'ru');
+      } catch (err) {}
+    }
+
+    res.json({
+      ok: true,
+      article: {
+        source,
+        id,
+        fullText: fullText || null,
+        fullText_ru: fullTextRu
+      }
+    });
+  } catch (error) {
+    console.error('Article API Error:', error);
+    res.status(500).json({ ok: false, error: 'Failed to fetch article details' });
+  }
+});
+
 const ALLOWED_TARGET_LANGS = new Set(['ru', 'en', 'de', 'fr', 'es', 'zh', 'ar', 'pt', 'it', 'ja', 'ko']);
 
 app.post('/api/translate', async (req, res) => {
@@ -666,7 +764,6 @@ app.post('/api/translate', async (req, res) => {
 
     if (text.length > 10000) return res.status(400).json({ ok: false, error: 'Text too long' });
 
-    // Whitelist target language to prevent URL injection
     const targetLang = (typeof to === 'string' && ALLOWED_TARGET_LANGS.has(to.toLowerCase()))
       ? to.toLowerCase()
       : 'ru';
@@ -679,15 +776,43 @@ app.post('/api/translate', async (req, res) => {
   }
 });
 
+// Batch translation endpoint
+app.post('/api/translate/batch', async (req, res) => {
+  try {
+    const { texts, to } = req.body;
+    if (!Array.isArray(texts) || texts.length === 0) {
+      return res.status(400).json({ ok: false, error: 'Array of texts required' });
+    }
+
+    const targetLang = (typeof to === 'string' && ALLOWED_TARGET_LANGS.has(to.toLowerCase()))
+      ? to.toLowerCase()
+      : 'ru';
+
+    const limitedTexts = texts.slice(0, 20); // max 20 per batch
+    const translations = await Promise.all(limitedTexts.map(async text => {
+      if (typeof text !== 'string' || !text.trim()) return { original: text, translated: text };
+      try {
+        const translated = await translationService.translate(text, targetLang);
+        return { original: text, translated };
+      } catch (err) {
+        return { original: text, translated: text };
+      }
+    }));
+
+    res.json({ ok: true, translations });
+  } catch (error) {
+    console.error('Batch Translation API Error:', error);
+    res.status(500).json({ ok: false, error: 'Batch translation failed' });
+  }
+});
+
 // Fallback for SPA
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Export for testing/serverless
 module.exports = app;
 
-// Start Server
 if (require.main === module) {
   startBackgroundJobs();
   app.listen(CONFIG.PORT, () => {
