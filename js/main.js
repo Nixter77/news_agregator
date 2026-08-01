@@ -59,6 +59,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   let activeSearchController = null;
+  let activeSearchToken = 0;
+  let activeModalArticleKey = null;
   let clientArticlesCache = [];
   /** @type {Map<string, string>} Article key → fullText store */
   const fullTextStore = new Map();
@@ -602,6 +604,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!newsModal) return;
 
     const articleKey = getArticleKey(article);
+    activeModalArticleKey = articleKey;
     const sourceKey = sanitizeString(article?.source).trim();
     const idKey = sanitizeString(article?.id).trim();
 
@@ -635,6 +638,7 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         const resp = await fetch(`/api/article?source=${encodeURIComponent(sourceKey)}&id=${encodeURIComponent(idKey)}&translate=${translate}`);
         const data = await resp.json();
+        if (activeModalArticleKey !== articleKey) return;
         if (data?.ok && data.article?.fullText) {
           fullText = data.article.fullText_ru || data.article.fullText;
           fullTextStore.set(articleKey, data.article.fullText);
@@ -642,10 +646,13 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (err) {}
     }
 
+    if (activeModalArticleKey !== articleKey) return;
+
     if (!fullText) {
       fullText = article?.snippet_ru || article?.snippet || 'Полный текст недоступен для этой новости.';
     } else if (translate && !article?.fullText_ru) {
       fullText = await translateViaApi(fullText);
+      if (activeModalArticleKey !== articleKey) return;
     }
 
     const textEl = document.getElementById('modal-text-content');
@@ -887,7 +894,7 @@ document.addEventListener('DOMContentLoaded', () => {
     `).join('');
   }
 
-  function renderArticles(articles, { query, source }) {
+  function renderArticles(articles, { query, source }, searchToken = activeSearchToken) {
     const highlightTokens = splitIntoTokens(query);
     const highlightRegexes = highlightTokens.map(token => ({
       token,
@@ -930,11 +937,11 @@ document.addEventListener('DOMContentLoaded', () => {
     updateLayoutView();
 
     if (translate) {
-      ensureArticlesTranslated(filteredArticles);
+      ensureArticlesTranslated(filteredArticles, searchToken);
     }
   }
 
-  async function ensureArticlesTranslated(articles) {
+  async function ensureArticlesTranslated(articles, searchToken) {
     if (!isTranslateEnabled() || !Array.isArray(articles) || articles.length === 0) return;
 
     const missingTexts = [];
@@ -952,6 +959,8 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify({ texts: missingTexts, to: 'ru' })
       });
       const data = await resp.json();
+      if (activeSearchToken !== searchToken) return;
+
       if (data?.ok && Array.isArray(data.translations)) {
         const map = new Map();
         data.translations.forEach(item => {
@@ -970,11 +979,11 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         });
 
-        if (updated && isTranslateEnabled()) {
+        if (updated && isTranslateEnabled() && activeSearchToken === searchToken) {
           renderArticles(clientArticlesCache, {
             query: sanitizeString(topicInput?.value).trim(),
             source: sanitizeString(sourceSelect?.value).trim()
-          });
+          }, searchToken);
         }
       }
     } catch (err) {
@@ -1071,6 +1080,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     const requestController = new AbortController();
     activeSearchController = requestController;
+    const searchToken = ++activeSearchToken;
 
     setLoading(true);
     searchFeedback.textContent = refresh ? 'Обновляем новости...' : 'Загрузка...';
@@ -1087,7 +1097,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (query) {
         recordSearchQuery(query);
       }
-      renderArticles(data.results, { query, source });
+      renderArticles(data.results, { query, source }, searchToken);
     } catch (error) {
       if (error.name === 'AbortError') return;
       searchFeedback.textContent = 'Ошибка соединения.';
@@ -1095,8 +1105,8 @@ document.addEventListener('DOMContentLoaded', () => {
     } finally {
       if (activeSearchController === requestController) {
         activeSearchController = null;
+        setLoading(false);
       }
-      setLoading(false);
     }
   }
 

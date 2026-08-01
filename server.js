@@ -238,6 +238,7 @@ class TranslationService {
   constructor(cache) {
     this.cache = cache;
     this.queue = [];
+    this.pendingTranslations = new Map();
     this.activeWorkers = 0;
     this.maxWorkers = CONFIG.FETCH.MAX_CONCURRENT_TRANSLATIONS;
   }
@@ -249,10 +250,19 @@ class TranslationService {
     const cached = this.cache.get(cacheKey);
     if (cached) return cached;
 
-    return new Promise((resolve, reject) => {
+    if (this.pendingTranslations.has(cacheKey)) {
+      return this.pendingTranslations.get(cacheKey);
+    }
+
+    const promise = new Promise((resolve, reject) => {
       this.queue.push({ text, targetLang, resolve, reject, cacheKey });
       this.processQueue();
+    }).finally(() => {
+      this.pendingTranslations.delete(cacheKey);
     });
+
+    this.pendingTranslations.set(cacheKey, promise);
+    return promise;
   }
 
   getCached(text, targetLang = 'ru') {
@@ -321,7 +331,7 @@ class RSSService {
   constructor(cache) {
     this.cache = cache;
     this.pendingRequests = new Map();
-    this.articleStore = new Map(); // Fulltext store out of search list payloads
+    this.articleStore = new LRUCache(2000); // Bounded fulltext store (max 2000 articles)
     this.xmlParser = new xml2js.Parser({ explicitArray: false, mergeAttrs: true, trim: true });
   }
 
@@ -601,11 +611,21 @@ async function startBackgroundJobs() {
     console.log(`[Background Job] Completed in ${Date.now() - start}ms. Pre-translated: ${translatedCount} articles. Cached feeds: ${rssCache.size}.`);
   };
 
-  fetchAndCacheAll().catch(err => console.error('[Background Job] Initial run error:', err));
+  const scheduleNext = () => {
+    setTimeout(async () => {
+      try {
+        await fetchAndCacheAll();
+      } catch (err) {
+        console.error('[Background Job] Scheduled run error:', err);
+      } finally {
+        scheduleNext();
+      }
+    }, 5 * 60 * 1000).unref();
+  };
 
-  setInterval(() => {
-    fetchAndCacheAll().catch(err => console.error('[Background Job] Scheduled run error:', err));
-  }, 5 * 60 * 1000).unref();
+  fetchAndCacheAll()
+    .catch(err => console.error('[Background Job] Initial run error:', err))
+    .finally(() => scheduleNext());
 }
 
 const app = express();
