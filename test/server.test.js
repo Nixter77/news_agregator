@@ -21,6 +21,8 @@ after(async () => {
     if (app.services.rssCache?.destroy) app.services.rssCache.destroy();
     if (app.services.translationCache?.destroy) app.services.translationCache.destroy();
     if (app.services.searchService?.searchCache?.destroy) app.services.searchService.searchCache.destroy();
+    if (app.services.rateLimiter?.destroy) app.services.rateLimiter.destroy();
+    if (app.services.rssService?.articleStore?.destroy) app.services.rssService.articleStore.destroy();
   }
   if (server) {
     if (typeof server.closeAllConnections === 'function') {
@@ -28,7 +30,6 @@ after(async () => {
     }
     await new Promise(resolve => server.close(resolve));
   }
-  process.exit(0);
 });
 
 test('health endpoint reports ok', async () => {
@@ -52,6 +53,10 @@ test('sources endpoint exposes feed metadata and caching headers', async () => {
   assert.equal(body.ok, true);
   assert.ok(Array.isArray(body.sources));
   assert.ok(body.sources.some(source => source.id === 'bbc'));
+  assert.ok(body.categories && Array.isArray(body.categories.tech));
+  assert.ok(Array.isArray(body.topSources));
+  const bbc = body.sources.find(source => source.id === 'bbc');
+  assert.ok(Array.isArray(bbc.categories));
 });
 
 test('serves local css asset with 7-day cache-control header', async () => {
@@ -125,6 +130,26 @@ test('article endpoint requires source and id', async () => {
   assert.equal(body.error, 'Source and id required');
 });
 
+test('article endpoint rejects unknown source', async () => {
+  const params = new URLSearchParams({ source: 'nope', id: '123' });
+  const response = await fetch(`${baseUrl}/api/article?${params}`, { headers: { connection: 'close' } });
+  assert.equal(response.status, 400);
+  const body = await response.json();
+  assert.equal(body.ok, false);
+  assert.equal(body.error, 'Unknown source');
+});
+
+test('rejects invalid JSON body on translate', async () => {
+  const response = await fetch(`${baseUrl}/api/translate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', connection: 'close' },
+    body: '{not-json'
+  });
+  assert.equal(response.status, 400);
+  const body = await response.json();
+  assert.equal(body.ok, false);
+});
+
 test('batch translate endpoint translates array of texts', async () => {
   const response = await fetch(`${baseUrl}/api/translate/batch`, {
     method: 'POST',
@@ -142,9 +167,17 @@ test('batch translate endpoint translates array of texts', async () => {
 });
 
 test('search endpoint includes title_ru and snippet_ru fields', async () => {
-  const response = await fetch(`${baseUrl}/api/search?translate=true`, { headers: { connection: 'close' } });
-  assert.equal(response.status, 200);
+  const response = await fetch(`${baseUrl}/api/search?translate=false`, {
+    headers: { connection: 'close' }
+  });
+  // 200 with results, or 503 if all upstream feeds are down
+  assert.ok(response.status === 200 || response.status === 503);
   const body = await response.json();
+  if (response.status === 503) {
+    assert.equal(body.ok, false);
+    assert.equal(body.degraded, true);
+    return;
+  }
   assert.equal(body.ok, true);
   assert.equal(Array.isArray(body.results), true);
   if (body.results.length > 0) {

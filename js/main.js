@@ -62,15 +62,50 @@ document.addEventListener('DOMContentLoaded', () => {
   let activeSearchToken = 0;
   let activeModalArticleKey = null;
   let clientArticlesCache = [];
-  /** @type {Map<string, string>} Article key → fullText store */
+  /** @type {Map<string, object>} Article key → article for O(1) card lookup */
+  let clientArticlesByKey = new Map();
+  /** @type {Map<string, string>} Article key → fullText store (bounded LRU) */
+  const FULLTEXT_STORE_LIMIT = 100;
   const fullTextStore = new Map();
   /** @type {Set<string>} Memory cache of favorite article keys for O(1) checks */
   let favoritesMemorySet = new Set();
+  /** @type {object[]|null} In-memory favorites list (avoid re-parsing localStorage) */
+  let favoritesMemoryList = null;
 
   let currentCategory = 'all';
-  let currentLayout = localStorage.getItem('news-aggregator.layout') || 'grid';
 
-  const CATEGORY_MAP = {
+  function safeStorageGet(key, fallback = null) {
+    try {
+      return window.localStorage.getItem(key) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function safeStorageSet(key, value) {
+    try {
+      window.localStorage.setItem(key, value);
+      return true;
+    } catch (error) {
+      console.warn('localStorage write failed', error);
+      return false;
+    }
+  }
+
+  function fullTextStoreSet(key, value) {
+    if (!key || !value) return;
+    if (fullTextStore.has(key)) fullTextStore.delete(key);
+    fullTextStore.set(key, value);
+    while (fullTextStore.size > FULLTEXT_STORE_LIMIT) {
+      const oldest = fullTextStore.keys().next().value;
+      fullTextStore.delete(oldest);
+    }
+  }
+
+  let currentLayout = safeStorageGet('news-aggregator.layout', 'grid') || 'grid';
+
+  // Fallback category map; refreshed from /api/sources when available
+  let CATEGORY_MAP = {
     tech: ['techcrunch', 'verge', 'wired', 'engadget', 'arstechnica', 'hackernews', 'bbc_tech', 'nyt_tech', 'bloomberg_tech'],
     business: ['forbes', 'bbc_business', 'axios'],
     world: ['nyt_world', 'reddit_news', 'politico', 'bbc', 'nyt', 'guardian', 'cnn', 'aljazeera', 'npr', 'reuters_world'],
@@ -80,11 +115,24 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   // Initialize Theme
-  const savedTheme = localStorage.getItem('news-aggregator.theme');
+  const savedTheme = safeStorageGet('news-aggregator.theme');
   if (savedTheme) {
     document.documentElement.setAttribute('data-theme', savedTheme);
   }
   updateThemeIcons();
+
+  async function loadSourceCatalog() {
+    try {
+      const resp = await fetch('/api/sources');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data?.ok && data.categories && typeof data.categories === 'object') {
+        CATEGORY_MAP = { ...CATEGORY_MAP, ...data.categories };
+      }
+    } catch (err) {
+      console.warn('Failed to load source catalog', err);
+    }
+  }
 
   function updateThemeIcons() {
     const isDark = document.documentElement.getAttribute('data-theme') === 'dark' ||
@@ -103,7 +151,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const current = document.documentElement.getAttribute('data-theme');
     const next = current === 'dark' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', next);
-    localStorage.setItem('news-aggregator.theme', next);
+    safeStorageSet('news-aggregator.theme', next);
     updateThemeIcons();
   });
 
@@ -174,9 +222,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function writeJsonList(key, value) {
     const storage = getStorage();
-    if (!storage) return;
+    if (!storage) return false;
 
-    storage.setItem(key, JSON.stringify(value));
+    try {
+      storage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch (error) {
+      console.warn('Failed to write JSON storage entry', error);
+      if (searchFeedback) {
+        searchFeedback.textContent = 'Не удалось сохранить локально (хранилище недоступно).';
+      }
+      return false;
+    }
   }
 
   function generateId(prefix = 'item') {
@@ -470,19 +527,23 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function getFavoriteArticles() {
+    if (favoritesMemoryList) return favoritesMemoryList;
+
     const list = readJsonList(favoritesStorageKey)
       .map(item => normalizeFavoriteArticle(item))
       .filter(item => item.key)
       .sort((left, right) => new Date(right.savedAt).getTime() - new Date(left.savedAt).getTime());
-    
-    // Refresh in-memory Set
+
+    favoritesMemoryList = list;
     favoritesMemorySet = new Set(list.map(item => item.key));
     return list;
   }
 
   function storeFavoriteArticles(favoriteArticles) {
-    writeJsonList(favoritesStorageKey, favoriteArticles.slice(0, maxFavorites));
-    favoritesMemorySet = new Set(favoriteArticles.map(item => item.key));
+    const next = favoriteArticles.slice(0, maxFavorites);
+    writeJsonList(favoritesStorageKey, next);
+    favoritesMemoryList = next;
+    favoritesMemorySet = new Set(next.map(item => item.key));
   }
 
   function findFavoriteArticle(articleKey) {
@@ -637,13 +698,20 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!fullText && sourceKey && idKey) {
       try {
         const resp = await fetch(`/api/article?source=${encodeURIComponent(sourceKey)}&id=${encodeURIComponent(idKey)}&translate=${translate}`);
+        if (!resp.ok) throw new Error(`article ${resp.status}`);
         const data = await resp.json();
         if (activeModalArticleKey !== articleKey) return;
         if (data?.ok && data.article?.fullText) {
           fullText = data.article.fullText_ru || data.article.fullText;
-          fullTextStore.set(articleKey, data.article.fullText);
+          fullTextStoreSet(articleKey, data.article.fullText);
         }
-      } catch (err) {}
+      } catch (err) {
+        console.warn('Failed to load article body', err);
+        const textElErr = document.getElementById('modal-text-content');
+        if (textElErr && activeModalArticleKey === articleKey) {
+          textElErr.textContent = 'Не удалось загрузить полный текст. Попробуйте позже.';
+        }
+      }
     }
 
     if (activeModalArticleKey !== articleKey) return;
@@ -904,11 +972,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (articles && articles.length > 0) {
       clientArticlesCache = articles;
+      clientArticlesByKey = new Map();
       articles.forEach(article => {
         const key = getArticleKey(article);
-        if (key && article.fullText) fullTextStore.set(key, article.fullText);
+        if (key) {
+          clientArticlesByKey.set(key, article);
+          if (article.fullText) fullTextStoreSet(key, article.fullText);
+        }
       });
-      buildStatsDashboard(articles);
+      // Stats only when dashboard is open (avoid work on every render)
+      if (statsDashboard && !statsDashboard.classList.contains('d-none')) {
+        buildStatsDashboard(articles);
+      }
     }
 
     let filteredArticles = articles;
@@ -925,7 +1000,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     searchFeedback.textContent = `Показаны ${filteredArticles.length} материалов.`;
     newsContainer.innerHTML = '';
-    
+
     // Ensure memory set is loaded
     getFavoriteArticles();
 
@@ -938,6 +1013,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (translate) {
       ensureArticlesTranslated(filteredArticles, searchToken);
+    }
+  }
+
+  function patchCardTranslations(article) {
+    const articleKey = getArticleKey(article);
+    if (!newsContainer || !articleKey) return;
+    const card = newsContainer.querySelector(`.news-card[data-article-key="${CSS.escape(articleKey)}"]`);
+    if (!card) return;
+
+    const translate = isTranslateEnabled();
+    const title = translate ? sanitizeString(article.title_ru || article.title) : sanitizeString(article.title);
+    const snippet = translate ? sanitizeString(article.snippet_ru || article.snippet) : sanitizeString(article.snippet);
+    const titleEl = card.querySelector('.news-card-title');
+    const textEl = card.querySelector('.news-card-text');
+    if (titleEl) titleEl.textContent = title;
+    if (textEl) textEl.textContent = snippet;
+
+    if (article.title_ru || article.snippet_ru) {
+      const badges = card.querySelector('.news-card-badges');
+      if (badges && !badges.querySelector('.news-card-badge--lang')) {
+        const badge = document.createElement('span');
+        badge.className = 'news-card-badge news-card-badge--lang';
+        badge.title = 'Переведено на русский';
+        badge.textContent = 'RU Перевод';
+        badges.appendChild(badge);
+      }
     }
   }
 
@@ -956,35 +1057,33 @@ document.addEventListener('DOMContentLoaded', () => {
       const resp = await fetch('/api/translate/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ texts: missingTexts, to: 'ru' })
+        body: JSON.stringify({ texts: missingTexts.slice(0, 20), to: 'ru' })
       });
+      if (!resp.ok) throw new Error(`batch ${resp.status}`);
       const data = await resp.json();
       if (activeSearchToken !== searchToken) return;
 
       if (data?.ok && Array.isArray(data.translations)) {
         const map = new Map();
         data.translations.forEach(item => {
+          if (item?.failed) return;
           if (item?.original && item?.translated) map.set(item.original, item.translated);
         });
 
-        let updated = false;
         articles.forEach(article => {
+          let patched = false;
           if (!article.title_ru && article.title && map.has(article.title)) {
             article.title_ru = map.get(article.title);
-            updated = true;
+            patched = true;
           }
           if (!article.snippet_ru && article.snippet && map.has(article.snippet)) {
             article.snippet_ru = map.get(article.snippet);
-            updated = true;
+            patched = true;
+          }
+          if (patched && isTranslateEnabled() && activeSearchToken === searchToken) {
+            patchCardTranslations(article);
           }
         });
-
-        if (updated && isTranslateEnabled() && activeSearchToken === searchToken) {
-          renderArticles(clientArticlesCache, {
-            query: sanitizeString(topicInput?.value).trim(),
-            source: sanitizeString(sourceSelect?.value).trim()
-          }, searchToken);
-        }
       }
     } catch (err) {
       console.warn('Failed client-side batch translation', err);
@@ -1089,7 +1188,14 @@ document.addEventListener('DOMContentLoaded', () => {
       const response = await fetch(`/api/search?${params.toString()}`, {
         signal: requestController.signal
       });
-      if (!response.ok) throw new Error(`Status ${response.status}`);
+      if (!response.ok) {
+        let message = `Status ${response.status}`;
+        try {
+          const errBody = await response.json();
+          if (errBody?.error) message = errBody.error;
+        } catch { /* non-JSON error body */ }
+        throw new Error(message);
+      }
       const data = await response.json();
       if (!data?.ok || !Array.isArray(data.results)) {
         throw new Error(data?.error || 'Не удалось получить данные');
@@ -1098,10 +1204,18 @@ document.addEventListener('DOMContentLoaded', () => {
         recordSearchQuery(query);
       }
       renderArticles(data.results, { query, source }, searchToken);
+      if (data.degraded && searchFeedback) {
+        searchFeedback.textContent = `${searchFeedback.textContent} (часть источников недоступна)`;
+      }
     } catch (error) {
       if (error.name === 'AbortError') return;
-      searchFeedback.textContent = 'Ошибка соединения.';
-      renderErrorState('Проверьте подключение к сети и попробуйте снова.');
+      const msg = error.message || 'Ошибка соединения.';
+      searchFeedback.textContent = msg.includes('unavailable') || msg.includes('Status 503')
+        ? 'Источники новостей временно недоступны.'
+        : 'Ошибка соединения.';
+      renderErrorState(msg.includes('unavailable')
+        ? 'Попробуйте обновить позже.'
+        : 'Проверьте подключение к сети и попробуйте снова.');
     } finally {
       if (activeSearchController === requestController) {
         activeSearchController = null;
@@ -1113,10 +1227,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function getArticleFromCard(card) {
     if (!card) return null;
     const key = sanitizeString(card.dataset.articleKey).trim();
-    if (key) {
-      const cached = clientArticlesCache.find(a => getArticleKey(a) === key);
-      if (cached) return cached;
-    }
+    if (key && clientArticlesByKey.has(key)) return clientArticlesByKey.get(key);
     return null;
   }
 
@@ -1251,19 +1362,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
   layoutGridBtn?.addEventListener('click', () => {
     currentLayout = 'grid';
-    localStorage.setItem('news-aggregator.layout', 'grid');
+    safeStorageSet('news-aggregator.layout', 'grid');
     updateLayoutView();
   });
 
   layoutListBtn?.addEventListener('click', () => {
     currentLayout = 'list';
-    localStorage.setItem('news-aggregator.layout', 'list');
+    safeStorageSet('news-aggregator.layout', 'list');
     updateLayoutView();
   });
 
   statsToggleBtn?.addEventListener('click', () => {
     const isHidden = statsDashboard?.classList.toggle('d-none');
     statsToggleBtn?.classList.toggle('active', !isHidden);
+    if (!isHidden && clientArticlesCache.length > 0) {
+      buildStatsDashboard(clientArticlesCache);
+    }
   });
 
   statsCloseBtn?.addEventListener('click', () => {
@@ -1281,14 +1395,8 @@ document.addEventListener('DOMContentLoaded', () => {
         sourceSelect.value = '';
       }
 
-      if (clientArticlesCache && clientArticlesCache.length > 0) {
-        renderArticles(clientArticlesCache, {
-          query: sanitizeString(topicInput?.value).trim(),
-          source: sanitizeString(sourceSelect?.value).trim()
-        });
-      } else {
-        fetchAndDisplayNews();
-      }
+      // Always re-fetch so server applies category → source subset
+      fetchAndDisplayNews();
     });
   });
 
@@ -1296,5 +1404,7 @@ document.addEventListener('DOMContentLoaded', () => {
   renderSavedSearches();
   renderQuickChips();
   updateLayoutView();
-  fetchAndDisplayNews({ initial: true });
+  loadSourceCatalog().finally(() => {
+    fetchAndDisplayNews({ initial: true });
+  });
 });
