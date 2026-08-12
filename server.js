@@ -26,6 +26,7 @@ const CONFIG = {
     RSS_LIMIT: 100,
     TRANSLATION_LIMIT: 2000,
     SEARCH_LIMIT: 200,
+    L2_GET_MS: 250,
   },
   FETCH: {
     TIMEOUT: 8000,
@@ -50,6 +51,7 @@ const CONFIG = {
     MAX_TRANSLATED_RESULTS: 10,
     TRANSLATE_BUDGET_MS: 0,
     QUERY_TRANSLATE_MS: 400,
+    DEADLINE_MS: Math.max(0, Number(process.env.SEARCH_DEADLINE_MS) || 8000),
   },
   TRANSLATION: {
     QUEUE_LIMIT: 200,
@@ -446,6 +448,16 @@ class LRUCache {
     this.cache.set(key, { value, expires, staleUntil });
   }
 
+  setEntry(key, { value, expires = 0, staleUntil = 0 }) {
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    } else if (this.cache.size >= this.limit) {
+      const oldestKey = this.cache.keys().next().value;
+      this.cache.delete(oldestKey);
+    }
+    this.cache.set(key, { value, expires, staleUntil });
+  }
+
   delete(key) {
     this.cache.delete(key);
   }
@@ -471,6 +483,275 @@ class LRUCache {
   destroy() {
     clearInterval(this._pruneInterval);
   }
+}
+
+const storeFetch = globalThis.fetch.bind(globalThis);
+
+class MemorySharedStore {
+  constructor() {
+    this.name = 'memory';
+    this.map = new Map();
+  }
+
+  async get(key) {
+    return this.map.has(key) ? this.map.get(key) : null;
+  }
+
+  async set(key, value) {
+    this.map.set(key, value);
+  }
+}
+
+class UpstashRestStore {
+  constructor({ url, token }) {
+    this.name = 'upstash';
+    this.url = String(url || '').replace(/\/$/, '');
+    this.token = token;
+  }
+
+  async _command(args, timeoutMs) {
+    const response = await storeFetch(this.url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(args),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) throw new Error(`upstash ${response.status}`);
+    return response.json();
+  }
+
+  async get(key) {
+    const data = await this._command(['GET', key], CONFIG.CACHE.L2_GET_MS);
+    if (data?.result == null) return null;
+    try {
+      return typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
+    } catch {
+      return null;
+    }
+  }
+
+  async set(key, value, ttlSeconds = 0) {
+    const args = ['SET', key, JSON.stringify(value)];
+    if (ttlSeconds > 0) args.push('EX', String(Math.ceil(ttlSeconds)));
+    await this._command(args, 1500);
+  }
+}
+
+class VercelRuntimeStore {
+  constructor(cache) {
+    this.name = 'vercel-runtime';
+    this.cache = cache;
+  }
+
+  async get(key) {
+    const value = await this.cache.get(key);
+    return value == null ? null : value;
+  }
+
+  async set(key, value, ttlSeconds = 60) {
+    await this.cache.set(key, value, {
+      ttl: Math.max(1, Math.ceil(ttlSeconds)),
+      tags: ['news-agg'],
+    });
+  }
+}
+
+function createSharedStore() {
+  const upstashUrl = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+  const upstashToken = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+  if (upstashUrl && upstashToken) {
+    return new UpstashRestStore({ url: upstashUrl, token: upstashToken });
+  }
+  if (process.env.VERCEL) {
+    try {
+      const { getCache } = require('@vercel/functions');
+      return new VercelRuntimeStore(getCache({ namespace: 'news-agg' }));
+    } catch (err) {
+      console.warn('[store] vercel runtime cache unavailable:', err.message);
+    }
+  }
+  return null;
+}
+
+class LayeredCache {
+  constructor(l1, l2, { prefix = 'c' } = {}) {
+    this.l1 = l1;
+    this.l2 = l2 || null;
+    this.prefix = prefix;
+  }
+
+  _k(key) {
+    const raw = `${this.prefix}:${key}`;
+    if (raw.length <= 180) return raw;
+    return `${this.prefix}:h:${crypto.createHash('sha1').update(String(key)).digest('hex')}`;
+  }
+
+  get(key) {
+    return this.l1.get(key);
+  }
+
+  peek(key) {
+    return this.l1.peek(key);
+  }
+
+  getSWR(key) {
+    return this.l1.getSWR(key);
+  }
+
+  async _readL2(key) {
+    if (!this.l2) return null;
+    try {
+      return await withTimeout(this.l2.get(this._k(key)), CONFIG.CACHE.L2_GET_MS, null);
+    } catch (err) {
+      console.warn('[store] l2 get failed:', err.message);
+      return null;
+    }
+  }
+
+  async _writeL2(key, envelope, ttlSeconds) {
+    if (!this.l2) return;
+    try {
+      await this.l2.set(this._k(key), envelope, ttlSeconds);
+    } catch (err) {
+      console.warn('[store] l2 set failed:', err.message);
+    }
+  }
+
+  _hydrate(key, envelope) {
+    if (!envelope || envelope.v !== 1 || !Object.prototype.hasOwnProperty.call(envelope, 'value')) {
+      return false;
+    }
+    const now = Date.now();
+    const staleUntil = Number(envelope.staleUntil) || 0;
+    const expires = Number(envelope.expires) || 0;
+    if (staleUntil && staleUntil <= now && (!expires || expires <= now)) return false;
+    this.l1.setEntry(key, { value: envelope.value, expires, staleUntil });
+    return true;
+  }
+
+  async getAsync(key) {
+    const local = this.l1.get(key);
+    if (local != null) return local;
+    const remote = await this._readL2(key);
+    if (!this._hydrate(key, remote)) return null;
+    return this.l1.get(key);
+  }
+
+  async getSWRAsync(key) {
+    const local = this.l1.getSWR(key);
+    if (local.status !== 'miss') return local;
+    const remote = await this._readL2(key);
+    if (!this._hydrate(key, remote)) return { status: 'miss', value: null };
+    return this.l1.getSWR(key);
+  }
+
+  async peekAsync(key) {
+    const local = this.l1.peek(key);
+    if (local != null) return local;
+    const remote = await this._readL2(key);
+    if (!this._hydrate(key, remote)) return null;
+    return this.l1.peek(key);
+  }
+
+  set(key, value, ttl = 0, staleWindowMs = 0) {
+    this.l1.set(key, value, ttl, staleWindowMs);
+    const item = this.l1.cache.get(key);
+    if (!item || !this.l2) return Promise.resolve();
+    const until = item.staleUntil || item.expires;
+    const ttlSeconds = until > Date.now() ? Math.ceil((until - Date.now()) / 1000) : 1;
+    return this._writeL2(key, {
+      v: 1,
+      value,
+      expires: item.expires,
+      staleUntil: item.staleUntil,
+    }, ttlSeconds);
+  }
+
+  delete(key) {
+    this.l1.delete(key);
+  }
+
+  clear() {
+    this.l1.clear();
+  }
+
+  get size() {
+    return this.l1.size;
+  }
+
+  pruneExpired() {
+    this.l1.pruneExpired();
+  }
+
+  destroy() {
+    this.l1.destroy();
+  }
+}
+
+/**
+ * Run mapper over items with a concurrency cap. Stop waiting at deadlineAt
+ * and return whatever finished; in-flight work keeps running (fills cache).
+ */
+function mapPoolWithDeadline(items, mapper, { concurrency, deadlineAt } = {}) {
+  const results = Array.from({ length: items.length });
+  const limit = Math.max(1, concurrency || 1);
+  const timed = Number.isFinite(deadlineAt);
+
+  return new Promise((resolve) => {
+    let next = 0;
+    let active = 0;
+    let settled = false;
+
+    const finish = (deadlineHit) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve({ results, deadlineHit });
+    };
+
+    const timer = timed
+      ? setTimeout(() => finish(true), Math.max(0, deadlineAt - Date.now()))
+      : null;
+
+    const launch = () => {
+      if (settled) return;
+      while (active < limit && next < items.length) {
+        const index = next;
+        next += 1;
+        active += 1;
+        Promise.resolve()
+          .then(() => mapper(items[index], index))
+          .then((value) => {
+            if (!settled) results[index] = { ok: true, value };
+          })
+          .catch((error) => {
+            if (!settled) results[index] = { ok: false, error };
+          })
+          .finally(() => {
+            active -= 1;
+            if (settled) return;
+            if (next >= items.length && active === 0) finish(false);
+            else launch();
+          });
+      }
+    };
+
+    if (items.length === 0) finish(false);
+    else launch();
+  });
+}
+
+function authorizeCron(req) {
+  const secret = process.env.CRON_SECRET || '';
+  const auth = String(req.headers.authorization || '');
+  const header = String(req.headers['x-cron-secret'] || '');
+  if (secret) {
+    return auth === `Bearer ${secret}` || header === secret;
+  }
+  return !process.env.VERCEL;
 }
 
 class RateLimiter {
@@ -537,11 +818,16 @@ class TranslationService {
    * @returns {Promise<string|null>} translated text, or null on failure / overload
    */
   async translate(text, targetLang = 'ru') {
-    if (!text || typeof text !== 'string') return null;
+    if (!isTranslatableText(text)) return null;
     const cacheKey = `${targetLang}|${text}`;
 
     const cached = this.cache.get(cacheKey);
     if (cached) return cached;
+
+    if (typeof this.cache.getAsync === 'function') {
+      const remote = await this.cache.getAsync(cacheKey);
+      if (remote) return remote;
+    }
 
     if (this.pendingTranslations.has(cacheKey)) {
       return this.pendingTranslations.get(cacheKey);
@@ -568,7 +854,7 @@ class TranslationService {
   }
 
   getCached(text, targetLang = 'ru') {
-    if (!text) return null;
+    if (!isTranslatableText(text)) return null;
     return this.cache.get(`${targetLang}|${text}`);
   }
 
@@ -616,6 +902,75 @@ const stripHtml = (str) => {
   return str.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 };
 
+const PLACEHOLDER_TEXT_RE = /^\(\s*(no title|no description|нет описания|нет заголовка)\s*\)$/i;
+const META_TITLE_RE =
+  /(\blive\s+threads?\b|\bmegathread\b|\blooking for (new )?moderators?\b|\b(daily|weekly|monthly)\s+(discussion|thread|round.?up)\b|^\s*\[?\s*(meta|mod\s*posts?|announcement)\s*\]?)/i;
+
+function collapseWs(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+function isPlaceholderText(text) {
+  const t = collapseWs(text);
+  return !t || PLACEHOLDER_TEXT_RE.test(t);
+}
+
+function isJunkSnippet(text) {
+  const t = collapseWs(text);
+  if (!t || isPlaceholderText(t)) return true;
+  if (/^submitted by\b/i.test(t)) return true;
+  if (/^\/u\/\S+/i.test(t)) return true;
+  if (/^\[(link|comments)\]/i.test(t)) return true;
+  if (/^(comments?|view comments?)$/i.test(t)) return true;
+  if (/submitted by/i.test(t) && /\[(link|comments)\]/i.test(t)) return true;
+  return false;
+}
+
+function isMetaFeedItem(title) {
+  const t = collapseWs(title);
+  if (!t || isPlaceholderText(t)) return true;
+  if (META_TITLE_RE.test(t)) return true;
+  if (/^\/?r\/\S+/i.test(t) && /\b(live|thread|megathread|moderators?)\b/i.test(t)) return true;
+  return false;
+}
+
+function isTranslatableText(text) {
+  const t = collapseWs(text);
+  if (t.length < 2) return false;
+  if (isPlaceholderText(t) || isJunkSnippet(t)) return false;
+  return true;
+}
+
+function extractImagesFromHtml(html) {
+  const urls = [];
+  const re = /<img\b[^>]*\bsrc=["']([^"']+)["']/gi;
+  let match;
+  while ((match = re.exec(String(html || '')))) {
+    const url = String(match[1] || '').replace(/&amp;/g, '&').trim();
+    if (/^https?:\/\//i.test(url)) urls.push(url);
+  }
+  return urls;
+}
+
+function extractOutboundLink(html) {
+  const labeled = String(html || '').match(/<a\s+[^>]*href=["']([^"']+)["'][^>]*>\s*\[link\]\s*<\/a>/i);
+  const href = labeled ? String(labeled[1] || '').replace(/&amp;/g, '&').trim() : '';
+  if (!/^https?:\/\//i.test(href)) return '';
+  if (/reddit\.com\/r\//i.test(href) && /\/comments\//i.test(href)) return '';
+  return href;
+}
+
+function pickMediaUrl(node) {
+  if (!node) return '';
+  if (typeof node === 'string' && /^https?:\/\//i.test(node)) return node;
+  if (Array.isArray(node)) return pickMediaUrl(node[0]);
+  if (typeof node === 'object') {
+    const url = node.url || node.href || node.$?.url || node.$?.href;
+    if (typeof url === 'string' && /^https?:\/\//i.test(url)) return url;
+  }
+  return '';
+}
+
 class RSSService {
   constructor(cache) {
     this.cache = cache;
@@ -639,13 +994,13 @@ class RSSService {
     const { forceRefresh = false } = options;
 
     if (!forceRefresh) {
-      const swr = this.cache.getSWR(url);
-      if (swr.status === 'fresh') return this._wrapCachedArticles(swr.value, { stale: false });
-      if (swr.status === 'stale') {
+      const local = this.cache.getSWR(url);
+      if (local.status === 'fresh') return this._wrapCachedArticles(local.value, { stale: false });
+      if (local.status === 'stale') {
         this._revalidateFeed(sourceKey, url, { forceRefresh: false }).catch((err) => {
           console.warn(`[SWR] revalidate failed ${sourceKey}:`, err.message);
         });
-        return this._wrapCachedArticles(swr.value, { stale: true });
+        return this._wrapCachedArticles(local.value, { stale: true });
       }
     }
 
@@ -674,7 +1029,7 @@ class RSSService {
     const entry = { promise, forceRefresh };
     this.pendingRequests.set(url, entry);
 
-    this._loadFeed(sourceKey, url)
+    this._loadFeed(sourceKey, url, { forceRefresh })
       .then(resolveFn, rejectFn)
       .finally(() => {
         if (this.pendingRequests.get(url) === entry) {
@@ -685,7 +1040,19 @@ class RSSService {
     return promise;
   }
 
-  async _loadFeed(sourceKey, url) {
+  async _loadFeed(sourceKey, url, { forceRefresh = false } = {}) {
+    if (!forceRefresh && typeof this.cache.getSWRAsync === 'function') {
+      try {
+        const remote = await this.cache.getSWRAsync(url);
+        if (remote.status === 'fresh') {
+          this.health.recordSuccess(sourceKey);
+          return this._wrapCachedArticles(remote.value, { stale: false });
+        }
+      } catch (err) {
+        console.warn(`[store] l2 hydrate failed ${sourceKey}:`, err.message);
+      }
+    }
+
     try {
       const response = await fetchWithRetry(url);
       const xml = await readLimitedText(response);
@@ -699,7 +1066,11 @@ class RSSService {
     } catch (error) {
       console.warn(`Error fetching feed ${sourceKey}: ${error.message}`);
       this.health.recordFailure(sourceKey, statusFromError(error));
-      const fallback = this.cache.peek(url) || [];
+      const fallback = (
+        typeof this.cache.peekAsync === 'function'
+          ? await this.cache.peekAsync(url)
+          : this.cache.peek(url)
+      ) || [];
       return {
         articles: Array.isArray(fallback) ? fallback : [],
         failed: true,
@@ -733,13 +1104,28 @@ class RSSService {
   }
 
   _normalizeItem(sourceKey, item, index) {
-    const title = stripHtml(getText(item.title));
-    const description = stripHtml(
+    const title = collapseWs(stripHtml(getText(item.title)));
+    if (isMetaFeedItem(title)) return null;
+
+    const rawHtml =
+      getText(item['content:encoded']) ||
+      getText(item.content) ||
       getText(item.description) ||
-        getText(item.summary) ||
-        getText(item['media:description']) ||
-        getText(item['content:encoded'])
+      getText(item.summary) ||
+      getText(item['media:description']) ||
+      '';
+
+    let snippet = collapseWs(
+      stripHtml(
+        getText(item.description) ||
+          getText(item.summary) ||
+          getText(item['media:description']) ||
+          rawHtml
+      )
     );
+    if (isJunkSnippet(snippet) || collapseWs(snippet).toLowerCase() === title.toLowerCase()) {
+      snippet = '';
+    }
 
     let link = '';
     if (typeof item.link === 'string') link = item.link;
@@ -747,15 +1133,20 @@ class RSSService {
     else if (Array.isArray(item.link)) {
       link = item.link.find((l) => l.type === 'text/html' || !l.type)?.href || item.link[0]?.href || '';
     }
+    const outbound = extractOutboundLink(rawHtml);
+    if (outbound) link = outbound;
 
-    let imageUrl = null;
-    const media = item['media:content'] || item['media:thumbnail'] || item['media:group']?.['media:content'];
-    const enclosure = item.enclosure;
-    const findUrl = (obj) => obj?.url || obj?.$?.url;
-
-    if (Array.isArray(media)) imageUrl = findUrl(media[0]);
-    else if (media) imageUrl = findUrl(media);
-    else if (enclosure) imageUrl = findUrl(Array.isArray(enclosure) ? enclosure[0] : enclosure);
+    const media =
+      item['media:content'] ||
+      item['media:thumbnail'] ||
+      item['media:group']?.['media:content'] ||
+      item['media:group']?.['media:thumbnail'];
+    const imageUrl =
+      pickMediaUrl(media) ||
+      pickMediaUrl(item.enclosure) ||
+      pickMediaUrl(item['itunes:image']) ||
+      extractImagesFromHtml(rawHtml)[0] ||
+      '';
 
     const pubDateStr = item.pubDate || item.published || item.updated || item.date;
     const pubDate = pubDateStr ? new Date(pubDateStr) : null;
@@ -765,27 +1156,22 @@ class RSSService {
 
     const id = getText(item.guid) || getText(item.id) || link || `${sourceKey}-${publishedAtMs}-${index}`;
 
-    const rawFull = getText(item['content:encoded']) || description || '';
-    const fullText = stripHtml(rawFull).substring(0, 4000);
-
+    const fullText = collapseWs(stripHtml(rawHtml)).substring(0, 4000);
     const articleKey = `${sourceKey}:${id}`;
-    this.articleStore.set(articleKey, fullText.length > 3 ? fullText : description);
-
-    const safeTitle = title || '(No Title)';
-    const safeSnippet = description || '(No Description)';
+    this.articleStore.set(articleKey, !isJunkSnippet(fullText) && fullText.length > 3 ? fullText : snippet);
 
     return {
       id,
       source: sourceKey,
       sourceTitle: SOURCES[sourceKey]?.title || sourceKey,
-      title: safeTitle,
-      snippet: safeSnippet,
+      title,
+      snippet,
       link,
-      imageUrl,
+      imageUrl: imageUrl || null,
       publishedAt,
       publishedAtMs,
       cleanLink: normalizeLink(link),
-      normTitle: normalizeTitle(safeTitle),
+      normTitle: normalizeTitle(title),
     };
   }
 
@@ -804,6 +1190,7 @@ function hydrateSearchCache(cached) {
       generatedAt: null,
       sourcesFailed: [],
       sourcesUsed: [],
+      deadlineHit: false,
     };
   }
   return {
@@ -814,6 +1201,7 @@ function hydrateSearchCache(cached) {
     generatedAt: cached?.generatedAt || null,
     sourcesFailed: Array.isArray(cached?.sourcesFailed) ? cached.sourcesFailed : [],
     sourcesUsed: Array.isArray(cached?.sourcesUsed) ? cached.sourcesUsed : [],
+    deadlineHit: Boolean(cached?.deadlineHit),
   };
 }
 
@@ -826,7 +1214,7 @@ class SearchService {
   }
 
   /**
-   * @returns {Promise<{ results: object[], upstreamFailed: boolean, degraded: boolean, cached: boolean, generatedAt: string|null, sourcesFailed: string[], sourcesUsed: string[] }>}
+   * @returns {Promise<{ results: object[], upstreamFailed: boolean, degraded: boolean, cached: boolean, generatedAt: string|null, sourcesFailed: string[], sourcesUsed: string[], deadlineHit: boolean }>}
    */
   async search(query, sourceKey, options = {}) {
     const { viewAll, refresh, category, allSources } = options;
@@ -879,26 +1267,31 @@ class SearchService {
     const allArticles = [];
     const sourcesFailed = [];
     let originOk = 0;
-    const concurrencyLimit = CONFIG.FETCH.MAX_CONCURRENT_FEEDS;
+    const deadlineMs = CONFIG.SEARCH.DEADLINE_MS;
+    const deadlineAt = deadlineMs > 0 ? Date.now() + deadlineMs : Infinity;
 
-    for (let i = 0; i < sources.length; i += concurrencyLimit) {
-      const chunk = sources.slice(i, i + concurrencyLimit);
-      const results = await Promise.all(
-        chunk.map((key) =>
-          this.rssService.fetchFeed(key, SOURCES[key].url, { forceRefresh: Boolean(refresh) })
-        )
-      );
-      results.forEach((result, idx) => {
-        const key = chunk[idx];
-        const articles = Array.isArray(result?.articles) ? result.articles : [];
-        allArticles.push(...articles);
-        if (result?.failed) sourcesFailed.push(key);
-        else originOk += 1;
-      });
+    const { results: feedSlots, deadlineHit } = await mapPoolWithDeadline(
+      sources,
+      (key) => this.rssService.fetchFeed(key, SOURCES[key].url, { forceRefresh: Boolean(refresh) }),
+      { concurrency: CONFIG.FETCH.MAX_CONCURRENT_FEEDS, deadlineAt }
+    );
+
+    for (let idx = 0; idx < sources.length; idx += 1) {
+      const key = sources[idx];
+      const slot = feedSlots[idx];
+      if (!slot || !slot.ok) {
+        sourcesFailed.push(key);
+        continue;
+      }
+      const result = slot.value;
+      const articles = Array.isArray(result?.articles) ? result.articles : [];
+      allArticles.push(...articles);
+      if (result?.failed) sourcesFailed.push(key);
+      else originOk += 1;
     }
 
     const generatedAt = new Date().toISOString();
-    const degraded = sourcesFailed.length > 0;
+    const degraded = sourcesFailed.length > 0 || deadlineHit;
     const upstreamFailed = sources.length > 0 && originOk === 0 && allArticles.length === 0;
 
     allArticles.sort((a, b) => (b.publishedAtMs || 0) - (a.publishedAtMs || 0));
@@ -909,11 +1302,11 @@ class SearchService {
     if (normQuery) {
       let translatedQuery = '';
       try {
-        const translated = await withTimeout(
-          this.translationService.translate(normQuery, 'en'),
-          CONFIG.SEARCH.QUERY_TRANSLATE_MS,
-          null
-        );
+        const leftover = Number.isFinite(deadlineAt) ? deadlineAt - Date.now() : CONFIG.SEARCH.QUERY_TRANSLATE_MS;
+        const translateBudget = Math.min(CONFIG.SEARCH.QUERY_TRANSLATE_MS, Math.max(0, leftover));
+        const translated = translateBudget < 40
+          ? null
+          : await withTimeout(this.translationService.translate(normQuery, 'en'), translateBudget, null);
         if (!translated || !String(translated).trim()) queryTranslateFailed = true;
         else translatedQuery = translated;
       } catch (err) {
@@ -961,6 +1354,7 @@ class SearchService {
       generatedAt,
       sourcesFailed,
       sourcesUsed: sources,
+      deadlineHit: Boolean(deadlineHit),
     };
 
     const emptyDueToTranslate =
@@ -969,7 +1363,9 @@ class SearchService {
       deduplicatedArticles.length > 0 &&
       queryTranslateFailed;
 
-    if (finalResults.length > 0) {
+    if (deadlineHit) {
+      /* partial fan-out — do not cache as a complete answer */
+    } else if (finalResults.length > 0) {
       this.searchCache.set(cacheKey, payload, CONFIG.CACHE.SEARCH_TTL);
     } else if (!upstreamFailed && !emptyDueToTranslate) {
       this.searchCache.set(cacheKey, payload, CONFIG.CACHE.SEARCH_EMPTY_TTL);
@@ -983,13 +1379,36 @@ class SearchService {
   }
 }
 
-const rssCache = new LRUCache(CONFIG.CACHE.RSS_LIMIT);
-const translationCache = new LRUCache(CONFIG.CACHE.TRANSLATION_LIMIT);
+const sharedStore = createSharedStore();
+const rssCache = new LayeredCache(new LRUCache(CONFIG.CACHE.RSS_LIMIT), sharedStore, { prefix: 'rss' });
+const translationCache = new LayeredCache(new LRUCache(CONFIG.CACHE.TRANSLATION_LIMIT), sharedStore, { prefix: 'tr' });
 
 const translationService = new TranslationService(translationCache);
 const rssService = new RSSService(rssCache);
 const searchService = new SearchService(rssService, translationService);
 const rateLimiter = new RateLimiter(CONFIG.RATE_LIMIT.WINDOW_MS, CONFIG.RATE_LIMIT.MAX_REQUESTS);
+
+async function warmupTopSources() {
+  const keys = TOP_SOURCES.filter((id) => SOURCES[id]);
+  const warmed = [];
+  const failed = [];
+  const { results } = await mapPoolWithDeadline(
+    keys,
+    (key) => rssService.fetchFeed(key, SOURCES[key].url),
+    { concurrency: CONFIG.FETCH.MAX_CONCURRENT_FEEDS, deadlineAt: Date.now() + 20_000 }
+  );
+  results.forEach((slot, idx) => {
+    const key = keys[idx];
+    if (slot?.ok && !slot.value?.failed) warmed.push(key);
+    else failed.push(key);
+  });
+  try {
+    await searchService.search('', '', { category: 'all' });
+  } catch (err) {
+    console.warn('[warmup] homepage search cache failed:', err.message);
+  }
+  return { warmed, failed, l2: sharedStore?.name || 'none' };
+}
 
 async function startBackgroundJobs() {
   const fetchAndCacheAll = async () => {
@@ -1064,6 +1483,8 @@ app.services = {
   searchService,
   rateLimiter,
   setFetchImpl,
+  sharedStore,
+  warmupTopSources,
 };
 app.helpers = {
   resolveSources,
@@ -1073,9 +1494,21 @@ app.helpers = {
   expandQueryTerms,
   tokenize,
   enrichWithTranslations,
+  isPlaceholderText,
+  isJunkSnippet,
+  isMetaFeedItem,
+  isTranslatableText,
+  extractImagesFromHtml,
+  extractOutboundLink,
   TOP_SOURCES,
   CATEGORY_SOURCES,
   SOURCES,
+  LRUCache,
+  LayeredCache,
+  MemorySharedStore,
+  mapPoolWithDeadline,
+  authorizeCron,
+  createSharedStore,
 };
 
 app.use(cors({
@@ -1096,7 +1529,10 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use('/api/', rateLimiter.middleware());
+app.use('/api/', (req, res, next) => {
+  if (req.path.startsWith('/cron')) return next();
+  return rateLimiter.middleware()(req, res, next);
+});
 
 const staticOptions = { maxAge: '1h', fallthrough: true };
 app.use('/css', express.static(path.join(__dirname, 'css'), staticOptions));
@@ -1111,7 +1547,30 @@ app.get('/health', (req, res) => {
       translation: translationCache.size,
       search: searchService.searchCache.size,
     },
+    store: {
+      l2: sharedStore?.name || 'none',
+    },
   });
+});
+
+app.get('/api/cron/warmup', async (req, res) => {
+  if (!authorizeCron(req)) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+  const started = Date.now();
+  try {
+    const { warmed, failed, l2 } = await warmupTopSources();
+    res.json({
+      ok: true,
+      warmed,
+      failed,
+      ms: Date.now() - started,
+      l2,
+    });
+  } catch (error) {
+    console.error(`[${req.requestId}] cron warmup failed:`, error);
+    res.status(500).json({ ok: false, error: 'Warmup failed' });
+  }
 });
 
 app.get('/api/sources', (req, res) => {
@@ -1178,6 +1637,7 @@ app.get('/api/search', async (req, res) => {
       generatedAt,
       sourcesFailed,
       sourcesUsed,
+      deadlineHit,
     } = await searchService.search(query, sourceKey, {
       viewAll: viewAll === 'true',
       allSources: allSources === 'true',
@@ -1201,6 +1661,7 @@ app.get('/api/search', async (req, res) => {
       generatedAt: generatedAt || null,
       sourcesFailed: sourcesFailed || [],
       sourcesUsed: sourcesUsed || [],
+      deadlineHit: Boolean(deadlineHit),
       translationsPending,
     });
   } catch (error) {

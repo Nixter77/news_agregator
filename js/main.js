@@ -35,9 +35,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // Theme Toggle Elements
   const themeToggleBtn = document.getElementById('theme-toggle-btn');
 
-  // Inline SVG Placeholder data-URI (fully URI-encoded to avoid inline attribute JS syntax errors)
-  const SVG_PLACEHOLDER = 'data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22800%22%20height%3D%22500%22%20viewBox%3D%220%200%20800%20500%22%3E%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%25%22%20y1%3D%220%25%22%20x2%3D%22100%25%22%20y2%3D%22100%25%22%3E%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22%231c1c1e%22%2F%3E%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22%232c2c2e%22%2F%3E%3C%2FlinearGradient%3E%3C%2Fdefs%3E%3Crect%20width%3D%22800%22%20height%3D%22500%22%20fill%3D%22url(%23g)%22%2F%3E%3Ctext%20x%3D%2250%25%22%20y%3D%2250%25%22%20dominant-baseline%3D%22middle%22%20text-anchor%3D%22middle%22%20fill%3D%22%238e8e93%22%20font-family%3D%22-apple-system%2C%20sans-serif%22%20font-size%3D%2228%22%20font-weight%3D%22600%22%3ENews%20Aggregator%3C%2Ftext%3E%3C%2Fsvg%3E';
-
   // Modern UI DOM references
   const categoryTabs = document.querySelectorAll('.category-tab');
   const layoutGridBtn = document.getElementById('layout-grid-btn');
@@ -146,6 +143,15 @@ document.addEventListener('DOMContentLoaded', () => {
     fullTextStoreSet(key, next);
   }
 
+  function isDisplayableSnippet(text) {
+    const value = sanitizeString(text).replace(/\s+/g, ' ').trim();
+    if (!value) return false;
+    if (/^\(\s*(no title|no description|нет описания|нет заголовка)\s*\)$/i.test(value)) return false;
+    if (/^submitted by\b/i.test(value)) return false;
+    if (/^\/u\/\S+/i.test(value)) return false;
+    return true;
+  }
+
   function bindImageFallback(root) {
     if (!root) return;
     const images = root.tagName === 'IMG' ? [root] : root.querySelectorAll('img');
@@ -153,7 +159,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (img.dataset.fallbackBound === '1') return;
       img.dataset.fallbackBound = '1';
       img.addEventListener('error', () => {
-        if (img.src !== SVG_PLACEHOLDER) img.src = SVG_PLACEHOLDER;
+        const card = img.closest('.news-card');
+        const favorite = img.closest('.favorite-item');
+        img.remove();
+        if (card) card.classList.add('news-card--no-media');
+        if (favorite) favorite.classList.add('favorite-item--no-media');
       });
     });
   }
@@ -650,7 +660,7 @@ document.addEventListener('DOMContentLoaded', () => {
       snippet: sanitizeString(article?.snippet).trim(),
       snippetRu: sanitizeString(article?.snippetRu || article?.snippet_ru).trim(),
       link: safeExternalUrl(article?.link, ''),
-      imageUrl: safeExternalUrl(article?.imageUrl, SVG_PLACEHOLDER),
+      imageUrl: safeExternalUrl(article?.imageUrl, ''),
       source: sanitizeString(article?.source).trim(),
       sourceTitle: sanitizeString(article?.sourceTitle || article?.source).trim(),
       publishedAt: sanitizeString(article?.publishedAt).trim(),
@@ -755,16 +765,19 @@ document.addEventListener('DOMContentLoaded', () => {
       const articleKey = escapeHtml(favoriteArticle.key);
       const title = escapeHtml(getFavoriteArticleTitle(favoriteArticle));
       const meta = escapeHtml(getFavoriteArticleMeta(favoriteArticle));
-      const image = escapeHtml(safeExternalUrl(favoriteArticle.imageUrl, SVG_PLACEHOLDER));
+      const image = safeExternalUrl(favoriteArticle.imageUrl, '');
+      const thumb = image
+        ? `<img src="${escapeHtml(image)}" class="favorite-item__thumb" alt="${title}" loading="lazy" decoding="async">`
+        : '';
 
       return `
-        <div class="favorite-item" data-favorite-key="${articleKey}">
+        <div class="favorite-item${image ? '' : ' favorite-item--no-media'}" data-favorite-key="${articleKey}">
           <button
             type="button"
             class="favorite-item__preview"
             data-favorite-open="${articleKey}"
           >
-            <img src="${image}" class="favorite-item__thumb" alt="${title}" loading="lazy" decoding="async">
+            ${thumb}
             <span class="favorite-item__content">
               <span class="favorite-item__title">${title}</span>
               <span class="favorite-item__meta">${meta}</span>
@@ -831,7 +844,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const displayTitle = title || 'Загрузка...';
     const sourceTitle = sanitizeString(article?.sourceTitle || article?.source).trim() || 'Источник';
     const timeMeta = computeTimeMeta(article?.publishedAt);
-    const imageSrc = safeExternalUrl(article?.imageUrl || article?.imageSrc, SVG_PLACEHOLDER);
+    const imageSrc = safeExternalUrl(article?.imageUrl || article?.imageSrc, '');
     const link = safeExternalUrl(article?.link, '#');
 
     newsModalLabel.textContent = displayTitle;
@@ -1090,13 +1103,17 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
+    if (data?.deadlineHit) {
+      parts.push('часть источников не успела ответить');
+    }
+
     if (data?.degraded) {
       const failed = Array.isArray(data.sourcesFailed) ? data.sourcesFailed : [];
       if (failed.length) {
         const labels = failed.slice(0, 4).map((id) => getSourceLabel(id) || id);
         const extra = failed.length > 4 ? ` и ещё ${failed.length - 4}` : '';
         parts.push(`недоступны: ${labels.join(', ')}${extra}`);
-      } else {
+      } else if (!data.deadlineHit) {
         parts.push('часть источников недоступна');
       }
     }
@@ -1273,19 +1290,30 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!card) return;
 
     const translate = isTranslateEnabled();
-    const title = translate ? sanitizeString(article.title_ru || article.title) : sanitizeString(article.title);
-    const snippet = translate ? sanitizeString(article.snippet_ru || article.snippet) : sanitizeString(article.snippet);
+    const rawTitle = translate ? sanitizeString(article.title_ru || article.title) : sanitizeString(article.title);
+    const rawSnippet = translate ? sanitizeString(article.snippet_ru || article.snippet) : sanitizeString(article.snippet);
+    const title = isDisplayableSnippet(rawTitle) ? rawTitle : sanitizeString(article.title);
+    const snippet = isDisplayableSnippet(rawSnippet) ? rawSnippet : '';
     const query = sanitizeString(topicInput?.value).trim();
     const highlightRegexes = splitIntoTokens(query).map((token) => ({
       token,
       re: new RegExp(`(${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
     }));
     const titleEl = card.querySelector('.news-card-open') || card.querySelector('.news-card-title');
-    const textEl = card.querySelector('.news-card-text');
+    let textEl = card.querySelector('.news-card-text');
     if (titleEl) titleEl.innerHTML = highlightMatchesWithRegexes(title, highlightRegexes);
-    if (textEl) textEl.innerHTML = highlightMatchesWithRegexes(snippet, highlightRegexes);
+    if (snippet) {
+      if (!textEl) {
+        textEl = document.createElement('p');
+        textEl.className = 'news-card-text';
+        card.querySelector('.news-card-body')?.appendChild(textEl);
+      }
+      textEl.innerHTML = highlightMatchesWithRegexes(snippet, highlightRegexes);
+    } else if (textEl) {
+      textEl.remove();
+    }
 
-    if (article.title_ru || article.snippet_ru) {
+    if (isDisplayableSnippet(article.title_ru) || isDisplayableSnippet(article.snippet_ru)) {
       const badges = card.querySelector('.news-card-badges');
       if (badges && !badges.querySelector('.news-card-badge--lang')) {
         const badge = document.createElement('span');
@@ -1321,11 +1349,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const missingTexts = [];
     const seen = new Set();
     articles.forEach((article) => {
-      if (article.title && !article.title_ru && !seen.has(article.title)) {
+      if (article.title && !article.title_ru && isDisplayableSnippet(article.title) && !seen.has(article.title)) {
         seen.add(article.title);
         missingTexts.push(article.title);
       }
-      if (article.snippet && !article.snippet_ru && !seen.has(article.snippet)) {
+      if (article.snippet && !article.snippet_ru && isDisplayableSnippet(article.snippet) && !seen.has(article.snippet)) {
         seen.add(article.snippet);
         missingTexts.push(article.snippet);
       }
@@ -1366,15 +1394,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const articleKey = getArticleKey(article);
     const isFavorite = favoritesMemorySet.has(articleKey);
-    const isTranslated = Boolean(translate && (article.title_ru || article.snippet_ru));
-    const title = translate ? sanitizeString(article.title_ru || article.title) : sanitizeString(article.title);
-    const snippet = translate ? sanitizeString(article.snippet_ru || article.snippet) : sanitizeString(article.snippet);
+    const rawTitle = translate ? sanitizeString(article.title_ru || article.title) : sanitizeString(article.title);
+    const rawSnippet = translate ? sanitizeString(article.snippet_ru || article.snippet) : sanitizeString(article.snippet);
+    const title = isDisplayableSnippet(rawTitle) ? rawTitle : sanitizeString(article.title);
+    const snippet = isDisplayableSnippet(rawSnippet) ? rawSnippet : '';
+    const isTranslated = Boolean(translate && (
+      (article.title_ru && article.title_ru === title) ||
+      (article.snippet_ru && article.snippet_ru === snippet)
+    ));
     const timeMeta = computeTimeMeta(article.publishedAt);
     const sourceTitle = sanitizeString(article.sourceTitle || article.source);
-    const image = safeExternalUrl(article.imageUrl, SVG_PLACEHOLDER);
+    const image = safeExternalUrl(article.imageUrl, '');
+    const hasImage = Boolean(image);
 
     const highlightedTitle = highlightMatchesWithRegexes(title, highlightRegexes);
-    const highlightedSnippet = highlightMatchesWithRegexes(snippet, highlightRegexes);
+    const highlightedSnippet = snippet ? highlightMatchesWithRegexes(snippet, highlightRegexes) : '';
     const safeImage = escapeHtml(image);
     const safeSourceTitle = escapeHtml(sourceTitle);
     const safeAlt = escapeHtml(title);
@@ -1384,10 +1418,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const langBadge = isTranslated
       ? `<span class="news-card-badge news-card-badge--lang" title="Переведено на русский">RU</span>`
       : '';
+    const mediaImg = hasImage
+      ? `<img src="${safeImage}" class="news-card-img" alt="${safeAlt}" loading="${eager ? 'eager' : 'lazy'}" decoding="async"${eager ? ' fetchpriority="high"' : ''}>`
+      : '';
 
     col.innerHTML = `
       <article
-        class="news-card${isFavorite ? ' news-card--bookmarked' : ''}"
+        class="news-card${isFavorite ? ' news-card--bookmarked' : ''}${hasImage ? '' : ' news-card--no-media'}"
         data-article-key="${safeArticleKey}"
       >
         <div class="news-card-media">
@@ -1398,7 +1435,7 @@ document.addEventListener('DOMContentLoaded', () => {
             aria-pressed="${isFavorite}"
             aria-label="${isFavorite ? 'Убрать из избранного' : 'Добавить в избранное'}"
           ><span aria-hidden="true">${favoriteIcon}</span></button>
-          <img src="${safeImage}" class="news-card-img" alt="${safeAlt}" loading="${eager ? 'eager' : 'lazy'}" decoding="async"${eager ? ' fetchpriority="high"' : ''}>
+          ${mediaImg}
           <div class="news-card-badges">
             ${langBadge}
           </div>
@@ -1407,7 +1444,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <h3 class="news-card-title">
             <button type="button" class="news-card-open">${highlightedTitle}</button>
           </h3>
-          <p class="news-card-text">${highlightedSnippet}</p>
+          ${highlightedSnippet ? `<p class="news-card-text">${highlightedSnippet}</p>` : ''}
         </div>
         <footer class="news-card-meta">
           <span class="news-meta-source">${safeSourceTitle}</span>

@@ -813,6 +813,30 @@ body {
   object-fit: cover;
 }
 
+.news-card--no-media .news-card-media {
+  aspect-ratio: auto;
+  height: 52px;
+  background: var(--bg-secondary);
+}
+
+.news-grid.view-list .news-card--no-media .news-card-media {
+  width: 52px;
+  height: 100%;
+}
+
+.news-card--no-media .news-card-img {
+  display: none;
+}
+
+.news-card--no-media .news-card-favorite {
+  top: 6px;
+  right: 6px;
+}
+
+.favorite-item--no-media .favorite-item__thumb {
+  display: none;
+}
+
 .news-card-favorite {
   position: absolute;
   top: 10px;

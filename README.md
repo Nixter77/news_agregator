@@ -28,6 +28,11 @@ Open `http://localhost:3000` by default. Set `PORT` if you need a different port
 
 - `PORT` - server port
 - `ALLOWED_ORIGIN` - CORS origin, defaults to `*`
+- `CRON_SECRET` - required on Vercel; cron sends `Authorization: Bearer <CRON_SECRET>`
+- `SEARCH_DEADLINE_MS` - `/api/search` wait budget (default `8000`)
+- `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` (or `KV_REST_API_*`) - optional shared L2 cache. On Vercel without Redis, Runtime Cache is used when `@vercel/functions` is available.
+
+`vercel.json` schedules `GET /api/cron/warmup` every 5 minutes (Pro). Hobby only allows a daily cron — change the expression or ping the same URL from an external scheduler.
 
 ## Notes
 

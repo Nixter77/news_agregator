@@ -208,6 +208,7 @@ test('search endpoint includes title_ru and snippet_ru fields', async () => {
   assert.ok(Array.isArray(body.sourcesFailed));
   assert.ok(Array.isArray(body.sourcesUsed));
   assert.ok('generatedAt' in body);
+  assert.equal(typeof body.deadlineHit, 'boolean');
   if (body.results.length > 0) {
     assert.ok('title_ru' in body.results[0]);
     assert.ok('snippet_ru' in body.results[0]);
@@ -462,5 +463,190 @@ test('search cache hit preserves degraded metadata', async () => {
   assert.equal(result.degraded, true);
   assert.deepEqual(result.sourcesFailed, ['cnn']);
   assert.equal(result.generatedAt, '2026-08-12T00:00:00.000Z');
+});
+
+test('layered cache hydrates L1 from shared L2', async () => {
+  const { LayeredCache, LRUCache, MemorySharedStore } = app.helpers;
+  const l2 = new MemorySharedStore();
+  const writer = new LayeredCache(new LRUCache(10), l2, { prefix: 't' });
+  await writer.set('k', ['hello'], 60_000, 20_000);
+  writer.destroy();
+
+  const reader = new LayeredCache(new LRUCache(10), l2, { prefix: 't' });
+  try {
+    const swr = await reader.getSWRAsync('k');
+    assert.equal(swr.status, 'fresh');
+    assert.deepEqual(swr.value, ['hello']);
+  } finally {
+    reader.destroy();
+  }
+});
+
+test('search deadline returns whatever finished as degraded', async () => {
+  const prevDeadline = app.config.SEARCH.DEADLINE_MS;
+  app.config.SEARCH.DEADLINE_MS = 80;
+  const original = app.services.rssService.fetchFeed.bind(app.services.rssService);
+  app.services.rssService.fetchFeed = async (key) => {
+    if (key === 'bbc') {
+      return {
+        articles: [{
+          id: 'fast-1',
+          title: 'Fast headline',
+          snippet: 'ok',
+          source: 'bbc',
+          publishedAtMs: Date.now(),
+        }],
+        failed: false,
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    return { articles: [], failed: true };
+  };
+  try {
+    const started = Date.now();
+    const result = await app.services.searchService.search('', '', {
+      refresh: true,
+      category: 'all',
+    });
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 400, `deadline waited ${elapsed}ms`);
+    assert.equal(result.degraded, true);
+    assert.equal(result.deadlineHit, true);
+    assert.ok(result.results.some((article) => article.title === 'Fast headline'));
+    assert.ok(result.sourcesFailed.length > 0);
+  } finally {
+    app.config.SEARCH.DEADLINE_MS = prevDeadline;
+    app.services.rssService.fetchFeed = original;
+  }
+});
+
+test('cron warmup is authorized locally and warms top sources', async () => {
+  app.services.setFetchImpl(async () => xmlResponse());
+  try {
+    const response = await fetch(`${baseUrl}/api/cron/warmup`, { headers: { connection: 'close' } });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.ok(Array.isArray(body.warmed));
+    assert.ok(body.warmed.length > 0);
+    assert.ok(body.warmed.every((id) => app.helpers.TOP_SOURCES.includes(id)));
+    assert.equal(typeof body.l2, 'string');
+  } finally {
+    app.services.setFetchImpl(null);
+  }
+});
+
+test('cron warmup rejects a bad secret', async () => {
+  const prev = process.env.CRON_SECRET;
+  process.env.CRON_SECRET = 'test-secret';
+  app.services.setFetchImpl(async () => xmlResponse());
+  try {
+    const denied = await fetch(`${baseUrl}/api/cron/warmup`, { headers: { connection: 'close' } });
+    assert.equal(denied.status, 401);
+
+    const allowed = await fetch(`${baseUrl}/api/cron/warmup`, {
+      headers: { authorization: 'Bearer test-secret', connection: 'close' },
+    });
+    assert.equal(allowed.status, 200);
+    const body = await allowed.json();
+    assert.equal(body.ok, true);
+  } finally {
+    if (prev == null) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = prev;
+    app.services.setFetchImpl(null);
+  }
+});
+
+test('vercel.json schedules warmup every five minutes', () => {
+  const vercel = require('../vercel.json');
+  assert.ok(Array.isArray(vercel.crons));
+  const warmup = vercel.crons.find((job) => job.path === '/api/cron/warmup');
+  assert.ok(warmup);
+  assert.equal(warmup.schedule, '*/5 * * * *');
+});
+
+test('health reports shared store backend', async () => {
+  const response = await fetch(`${baseUrl}/health`, { headers: { connection: 'close' } });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.store.l2, 'none');
+});
+
+const SAMPLE_ATOM = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+  <title>World News</title>
+  <entry>
+    <title>/r/WorldNews Live Thread: Russian Invasion of Ukraine Day 1631, Part 1 (Thread #1778)</title>
+    <id>t3_live</id>
+    <link href="https://www.reddit.com/r/worldnews/comments/live/" />
+    <content type="html"> submitted by /u/WorldNewsMods &lt;a href="https://www.reddit.com/live/abc"&gt;[link]&lt;/a&gt;</content>
+  </entry>
+  <entry>
+    <title>r/WorldNews is looking for new moderators. Click here to apply!</title>
+    <id>t3_mod</id>
+    <link href="https://www.reddit.com/r/worldnews/comments/mod/" />
+  </entry>
+  <entry>
+    <title>Iran Tracked Trump Down to His Exact Hotel Floor</title>
+    <id>t3_news</id>
+    <link href="https://www.reddit.com/r/worldnews/comments/news/" />
+    <media:thumbnail url="https://external-preview.redd.it/thumb.jpg" />
+    <content type="html">&lt;table&gt;&lt;tr&gt;&lt;td&gt;&lt;img src="https://external-preview.redd.it/thumb.jpg" /&gt;&lt;/td&gt;&lt;td&gt; submitted by /u/foo &lt;a href="https://www.ibtimes.co.uk/story"&gt;[link]&lt;/a&gt; &lt;a href="https://www.reddit.com/r/worldnews/comments/news/"&gt;[comments]&lt;/a&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;</content>
+  </entry>
+</feed>`;
+
+test('placeholder and meta feed text are not treated as content', () => {
+  const {
+    isPlaceholderText,
+    isJunkSnippet,
+    isMetaFeedItem,
+    isTranslatableText,
+    extractOutboundLink,
+  } = app.helpers;
+  assert.equal(isPlaceholderText('(No Description)'), true);
+  assert.equal(isPlaceholderText('(Нет описания)'), true);
+  assert.equal(isJunkSnippet('submitted by /u/WorldNewsMods [link] [comments]'), true);
+  assert.equal(isMetaFeedItem('/r/WorldNews Live Thread: Russian Invasion of Ukraine Day 1631'), true);
+  assert.equal(isMetaFeedItem('Iran Tracked Trump Down to His Exact Hotel Floor'), false);
+  assert.equal(isTranslatableText('(No Description)'), false);
+  assert.equal(extractOutboundLink('<a href="https://www.ibtimes.co.uk/story">[link]</a>'), 'https://www.ibtimes.co.uk/story');
+});
+
+test('atom feed chrome is dropped and media/outbound link are kept', async () => {
+  const parsed = await app.services.rssService.xmlParser.parseStringPromise(SAMPLE_ATOM);
+  const articles = app.services.rssService._normalizeFeed('reddit_news', parsed);
+  assert.equal(articles.some((article) => /live thread/i.test(article.title)), false);
+  assert.equal(articles.some((article) => /moderators/i.test(article.title)), false);
+  assert.equal(articles.some((article) => article.snippet === '(No Description)'), false);
+  assert.equal(articles.some((article) => article.title === '(No Title)'), false);
+
+  const news = articles.find((article) => /Iran Tracked/i.test(article.title));
+  assert.ok(news);
+  assert.equal(news.snippet, '');
+  assert.equal(news.imageUrl, 'https://external-preview.redd.it/thumb.jpg');
+  assert.equal(news.link, 'https://www.ibtimes.co.uk/story');
+});
+
+test('empty RSS description does not become a sentinel snippet', async () => {
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Example</title>
+<item>
+  <title>Only a title</title>
+  <link>https://example.com/only-title</link>
+  <description></description>
+  <guid>only-title</guid>
+</item>
+</channel></rss>`;
+  const parsed = await app.services.rssService.xmlParser.parseStringPromise(xml);
+  const articles = app.services.rssService._normalizeFeed('hackernews', parsed);
+  assert.equal(articles.length, 1);
+  assert.equal(articles[0].title, 'Only a title');
+  assert.equal(articles[0].snippet, '');
+  assert.equal(articles[0].imageUrl, null);
+});
+
+test('translate service refuses placeholder strings', async () => {
+  const result = await app.services.translationService.translate('(No Description)', 'ru');
+  assert.equal(result, null);
 });
 
