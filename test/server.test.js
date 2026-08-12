@@ -72,6 +72,17 @@ test('homepage renders basic layout', async () => {
   const response = await fetch(`${baseUrl}/`, { headers: { connection: 'close' } });
   assert.equal(response.status, 200);
   assert.match(response.headers.get('content-type') || '', /text\/html/);
+  const html = await response.text();
+  assert.match(html, /js\/theme-boot\.js\?v=/);
+});
+
+test('dark theme tokens are valid standalone CSS rules', async () => {
+  const response = await fetch(`${baseUrl}/css/style.css`, { headers: { connection: 'close' } });
+  assert.equal(response.status, 200);
+  const css = await response.text();
+  assert.match(css, /\[data-theme="dark"\]\s*\{/);
+  assert.match(css, /@media \(prefers-color-scheme: dark\)/);
+  assert.doesNotMatch(css, /\[data-theme="dark"\],\s*@media/);
 });
 
 test('rejects unknown sources before performing a search', async () => {

@@ -854,7 +854,7 @@ app.use((req, res, next) => {
 
 app.use('/api/', rateLimiter.middleware());
 
-const staticOptions = { maxAge: '7d', immutable: true, fallthrough: true };
+const staticOptions = { maxAge: '1h', fallthrough: true };
 app.use('/css', express.static(path.join(__dirname, 'css'), staticOptions));
 app.use('/js', express.static(path.join(__dirname, 'js'), staticOptions));
 

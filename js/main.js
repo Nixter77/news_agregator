@@ -102,6 +102,39 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function getStoredFullText(key) {
+    const value = fullTextStore.get(key);
+    if (!value) return { original: '', ru: '' };
+    if (typeof value === 'string') return { original: value, ru: '' };
+    return {
+      original: sanitizeString(value.original),
+      ru: sanitizeString(value.ru)
+    };
+  }
+
+  function storeFullText(key, { original, ru } = {}) {
+    if (!key) return;
+    const prev = getStoredFullText(key);
+    const next = {
+      original: original != null && original !== '' ? original : prev.original,
+      ru: ru != null && ru !== '' ? ru : prev.ru
+    };
+    if (!next.original && !next.ru) return;
+    fullTextStoreSet(key, next);
+  }
+
+  function bindImageFallback(root) {
+    if (!root) return;
+    const images = root.tagName === 'IMG' ? [root] : root.querySelectorAll('img');
+    images.forEach((img) => {
+      if (img.dataset.fallbackBound === '1') return;
+      img.dataset.fallbackBound = '1';
+      img.addEventListener('error', () => {
+        if (img.src !== SVG_PLACEHOLDER) img.src = SVG_PLACEHOLDER;
+      });
+    });
+  }
+
   let currentLayout = safeStorageGet('news-aggregator.layout', 'grid') || 'grid';
 
   // Fallback category map; refreshed from /api/sources when available
@@ -114,11 +147,41 @@ document.addEventListener('DOMContentLoaded', () => {
     sports: ['espn']
   };
 
-  // Initialize Theme
-  const savedTheme = safeStorageGet('news-aggregator.theme');
-  if (savedTheme) {
-    document.documentElement.setAttribute('data-theme', savedTheme);
+  function isDarkTheme() {
+    const explicit = document.documentElement.getAttribute('data-theme');
+    if (explicit === 'dark') return true;
+    if (explicit === 'light') return false;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
   }
+
+  function updateThemeColorMeta() {
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', isDarkTheme() ? '#1C1C1E' : '#007AFF');
+  }
+
+  function updateThemeIcons() {
+    const isDark = isDarkTheme();
+    const sunIcon = themeToggleBtn?.querySelector('.theme-icon-sun');
+    const moonIcon = themeToggleBtn?.querySelector('.theme-icon-moon');
+
+    if (sunIcon && moonIcon) {
+      sunIcon.classList.toggle('d-none', !isDark);
+      moonIcon.classList.toggle('d-none', isDark);
+    }
+    if (themeToggleBtn) {
+      themeToggleBtn.setAttribute('aria-pressed', String(isDark));
+      themeToggleBtn.title = isDark ? 'Включить светлую тему' : 'Включить тёмную тему';
+      themeToggleBtn.setAttribute('aria-label', themeToggleBtn.title);
+    }
+    updateThemeColorMeta();
+  }
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    safeStorageSet('news-aggregator.theme', theme);
+    updateThemeIcons();
+  }
+
   updateThemeIcons();
 
   async function loadSourceCatalog() {
@@ -134,25 +197,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function updateThemeIcons() {
-    const isDark = document.documentElement.getAttribute('data-theme') === 'dark' ||
-      (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches);
-    
-    const sunIcon = themeToggleBtn?.querySelector('.theme-icon-sun');
-    const moonIcon = themeToggleBtn?.querySelector('.theme-icon-moon');
-    
-    if (sunIcon && moonIcon) {
-      sunIcon.classList.toggle('d-none', !isDark);
-      moonIcon.classList.toggle('d-none', isDark);
-    }
-  }
-
   themeToggleBtn?.addEventListener('click', () => {
-    const current = document.documentElement.getAttribute('data-theme');
-    const next = current === 'dark' ? 'light' : 'dark';
-    document.documentElement.setAttribute('data-theme', next);
-    safeStorageSet('news-aggregator.theme', next);
-    updateThemeIcons();
+    applyTheme(isDarkTheme() ? 'light' : 'dark');
   });
 
   function sanitizeString(str) {
@@ -615,7 +661,7 @@ document.addEventListener('DOMContentLoaded', () => {
             class="favorite-item__preview"
             data-favorite-open="${articleKey}"
           >
-            <img src="${image}" class="favorite-item__thumb" alt="${title}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='${SVG_PLACEHOLDER}';">
+            <img src="${image}" class="favorite-item__thumb" alt="${title}" loading="lazy" decoding="async">
             <span class="favorite-item__content">
               <span class="favorite-item__title">${title}</span>
               <span class="favorite-item__meta">${meta}</span>
@@ -631,6 +677,7 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
       `;
     }).join('');
+    bindImageFallback(favoritesListContainer);
   }
 
   function toggleFavoriteArticle(article) {
@@ -662,70 +709,88 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Open native HTML5 <dialog> modal
   async function openArticleModal(article) {
-    if (!newsModal) return;
+    if (!newsModal || !article) return;
 
     const articleKey = getArticleKey(article);
     activeModalArticleKey = articleKey;
     const sourceKey = sanitizeString(article?.source).trim();
     const idKey = sanitizeString(article?.id).trim();
-
-    let fullText = fullTextStore.get(articleKey) || sanitizeString(article?.fullText).trim();
     const translate = isTranslateEnabled();
+    const stillThisArticle = () => activeModalArticleKey === articleKey;
 
-    // Show initial skeleton in modal
-    const title = sanitizeString(article?.title || article?.title_ru || article?.titleRu).trim() || 'Загрузка...';
+    const stored = getStoredFullText(articleKey);
+    let originalText = stored.original || sanitizeString(article?.fullText).trim();
+    let translatedText = stored.ru || sanitizeString(article?.fullText_ru || article?.fullTextRu).trim();
+
+    const title = translate
+      ? sanitizeString(article?.title_ru || article?.titleRu || article?.title).trim()
+      : sanitizeString(article?.title).trim();
+    const displayTitle = title || 'Загрузка...';
     const sourceTitle = sanitizeString(article?.sourceTitle || article?.source).trim() || 'Источник';
     const timeMeta = computeTimeMeta(article?.publishedAt);
     const imageSrc = safeExternalUrl(article?.imageUrl || article?.imageSrc, SVG_PLACEHOLDER);
     const link = safeExternalUrl(article?.link, '#');
 
-    newsModalLabel.textContent = title;
+    newsModalLabel.textContent = displayTitle;
     newsModalBody.innerHTML = `
       <div class="modal-article">
-        ${imageSrc ? `<img src="${escapeHtml(imageSrc)}" class="modal-article-img" alt="${escapeHtml(title)}" loading="lazy">` : ''}
-        <div class="modal-article-meta mb-3">
+        ${imageSrc ? `<img src="${escapeHtml(imageSrc)}" class="modal-article-img" alt="${escapeHtml(displayTitle)}">` : ''}
+        <div class="modal-article-meta">
           <span class="badge">${escapeHtml(sourceTitle)}</span>
           <span>${escapeHtml(timeMeta.relative)}</span>
         </div>
-        <p class="modal-article-text" id="modal-text-content">Загружаем текст статьи...</p>
+        <p class="modal-article-text modal-article-text--loading" id="modal-text-content">Загружаем текст статьи...</p>
         <p><a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">Читать в оригинале ↗</a></p>
       </div>
     `;
-
+    bindImageFallback(newsModalBody);
     newsModal.showModal();
 
-    // Fetch fullText from /api/article if not present in client memory
-    if (!fullText && sourceKey && idKey) {
+    if ((!originalText || (translate && !translatedText)) && sourceKey && idKey) {
       try {
         const resp = await fetch(`/api/article?source=${encodeURIComponent(sourceKey)}&id=${encodeURIComponent(idKey)}&translate=${translate}`);
         if (!resp.ok) throw new Error(`article ${resp.status}`);
         const data = await resp.json();
-        if (activeModalArticleKey !== articleKey) return;
-        if (data?.ok && data.article?.fullText) {
-          fullText = data.article.fullText_ru || data.article.fullText;
-          fullTextStoreSet(articleKey, data.article.fullText);
+        if (!stillThisArticle()) return;
+        if (data?.ok && data.article) {
+          if (data.article.fullText) originalText = data.article.fullText;
+          if (data.article.fullText_ru) translatedText = data.article.fullText_ru;
+          storeFullText(articleKey, { original: originalText, ru: translatedText });
         }
       } catch (err) {
         console.warn('Failed to load article body', err);
         const textElErr = document.getElementById('modal-text-content');
-        if (textElErr && activeModalArticleKey === articleKey) {
+        if (textElErr && stillThisArticle() && !originalText && !translatedText) {
+          textElErr.classList.remove('modal-article-text--loading');
           textElErr.textContent = 'Не удалось загрузить полный текст. Попробуйте позже.';
+          return;
         }
       }
     }
 
-    if (activeModalArticleKey !== articleKey) return;
+    if (!stillThisArticle()) return;
 
-    if (!fullText) {
-      fullText = article?.snippet_ru || article?.snippet || 'Полный текст недоступен для этой новости.';
-    } else if (translate && !article?.fullText_ru) {
-      fullText = await translateViaApi(fullText);
-      if (activeModalArticleKey !== articleKey) return;
+    if (translate && originalText && !translatedText) {
+      const maybeRu = await translateViaApi(originalText);
+      if (!stillThisArticle()) return;
+      if (maybeRu && maybeRu !== originalText) {
+        translatedText = maybeRu;
+        storeFullText(articleKey, { original: originalText, ru: translatedText });
+      }
     }
 
     const textEl = document.getElementById('modal-text-content');
-    if (textEl) {
-      textEl.textContent = fullText;
+    if (!textEl || !stillThisArticle()) return;
+    textEl.classList.remove('modal-article-text--loading');
+
+    if (translate && translatedText) {
+      textEl.textContent = translatedText;
+    } else if (originalText) {
+      textEl.textContent = originalText;
+    } else {
+      textEl.textContent = (translate
+        ? sanitizeString(article?.snippet_ru || article?.snippet)
+        : sanitizeString(article?.snippet)) || 'Полный текст недоступен для этой новости.';
     }
   }
 
@@ -977,7 +1042,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const key = getArticleKey(article);
         if (key) {
           clientArticlesByKey.set(key, article);
-          if (article.fullText) fullTextStoreSet(key, article.fullText);
+          if (article.fullText || article.fullText_ru) {
+            storeFullText(key, { original: article.fullText, ru: article.fullText_ru });
+          }
         }
       });
       // Stats only when dashboard is open (avoid work on every render)
@@ -1131,7 +1198,7 @@ document.addEventListener('DOMContentLoaded', () => {
             aria-pressed="${isFavorite}"
             aria-label="${isFavorite ? 'Убрать из избранного' : 'Добавить в избранное'}"
           ><span>${favoriteIcon}</span></button>
-          <img src="${safeImage}" class="news-card-img" alt="${safeAlt}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='${SVG_PLACEHOLDER}';">
+          <img src="${safeImage}" class="news-card-img" alt="${safeAlt}" loading="lazy" decoding="async">
           <div class="news-card-badges">
             <span class="news-card-badge">${safeSourceTitle}</span>
             ${langBadge}
@@ -1151,6 +1218,7 @@ document.addEventListener('DOMContentLoaded', () => {
       </article>
     `;
 
+    bindImageFallback(col);
     return col;
   }
 
@@ -1163,6 +1231,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     updateSaveSearchButtonState();
     renderFavoritesPanel();
+
+    const hasRealCards = Boolean(newsContainer?.querySelector('.news-card:not(.news-card--skeleton)'));
+    if (initial || !hasRealCards) {
+      renderSkeletons();
+    }
 
     const params = new URLSearchParams();
     if (query) params.set('q', query);
@@ -1404,7 +1477,7 @@ document.addEventListener('DOMContentLoaded', () => {
   renderSavedSearches();
   renderQuickChips();
   updateLayoutView();
-  loadSourceCatalog().finally(() => {
-    fetchAndDisplayNews({ initial: true });
-  });
+  renderSkeletons();
+  fetchAndDisplayNews({ initial: true });
+  loadSourceCatalog();
 });

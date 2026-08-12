@@ -6,11 +6,12 @@
     <meta name="description" content="Мировые новости с мгновенным переводом на русский язык">
     <meta name="theme-color" content="#007AFF">
     <title>Новостной Агрегатор</title>
-    
+    <script src="js/theme-boot.js?v=20260812"></script>
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/style.css?v=20260812">
 </head>
 <body>
 
@@ -211,7 +212,7 @@
     </main>
 
     <!-- Native HTML Dialog Modal for full news article -->
-    <dialog class="article-modal" id="news-modal">
+    <dialog class="article-modal" id="news-modal" aria-labelledby="news-modal-label">
         <div class="modal-card">
             <header class="modal-header">
                 <h3 class="modal-title" id="news-modal-label">Загрузка новости...</h3>
@@ -223,6 +224,6 @@
         </div>
     </dialog>
 
-    <script src="js/main.js" defer></script>
+    <script src="js/main.js?v=20260812" defer></script>
 </body>
 </html>
