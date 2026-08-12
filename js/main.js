@@ -16,14 +16,18 @@ document.addEventListener('DOMContentLoaded', () => {
   const searchFeedback = document.getElementById('search-feedback');
   const translateToggle = document.getElementById('translate-toggle');
   const viewAllToggle = document.getElementById('view-all-toggle');
-  const quickTopicButtons = document.querySelectorAll('[data-quick-topic]');
+  const allSourcesToggle = document.getElementById('all-sources-toggle');
+  const brandHome = document.getElementById('brand-home');
   const saveSearchButton = document.getElementById('save-search-button');
   const savedSearchesContainer = document.getElementById('saved-searches-list');
+  const savedSearchesPanel = document.getElementById('saved-searches-panel');
   const savedSearchesStorageKey = 'news-aggregator.saved-searches';
   const searchHistoryStorageKey = 'news-aggregator.search-history';
   const maxSavedSearches = 8;
   const quickChipsContainer = document.querySelector('.quick-chips-scroll');
   const favoritesListContainer = document.getElementById('favorites-list');
+  const favoritesPanel = document.getElementById('favorites-panel');
+  const panelsContainer = document.getElementById('panels-container');
   const favoritesCountElement = document.getElementById('favorites-count');
   const favoritesStorageKey = 'news-aggregator.favorites';
   const maxFavorites = 24;
@@ -73,6 +77,22 @@ document.addEventListener('DOMContentLoaded', () => {
   let favoritesMemoryList = null;
 
   let currentCategory = 'all';
+  let pendingSourceFromUrl = '';
+  const sourceTitleById = new Map();
+  const KNOWN_CATEGORIES = new Set(['all', 'tech', 'business', 'world', 'science', 'culture', 'sports']);
+  const CATEGORY_LABELS = {
+    tech: 'Технологии',
+    business: 'Бизнес',
+    world: 'Мир',
+    science: 'Наука',
+    culture: 'Культура',
+    sports: 'Спорт'
+  };
+  const DEFAULT_TOPIC_CHIPS = ['Израиль', 'Украина', 'ИИ', 'Экономика', 'Климат', 'Выборы'];
+  const SECTION_CHIP_BLOCKLIST = new Set([
+    'технологии', 'наука', 'спорт', 'бизнес', 'мир', 'культура', 'главное', 'все',
+    'все материалы', 'больше карточек', 'все источники'
+  ]);
 
   function safeStorageGet(key, fallback = null) {
     try {
@@ -135,17 +155,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  let currentLayout = safeStorageGet('news-aggregator.layout', 'grid') || 'grid';
+  function preferredLayout() {
+    const stored = safeStorageGet('news-aggregator.layout');
+    if (stored === 'grid' || stored === 'list') return stored;
+    return window.matchMedia('(max-width: 768px)').matches ? 'list' : 'grid';
+  }
 
-  // Fallback category map; refreshed from /api/sources when available
-  let CATEGORY_MAP = {
-    tech: ['techcrunch', 'verge', 'wired', 'engadget', 'arstechnica', 'hackernews', 'bbc_tech', 'nyt_tech', 'bloomberg_tech'],
-    business: ['forbes', 'bbc_business', 'axios'],
-    world: ['nyt_world', 'reddit_news', 'politico', 'bbc', 'nyt', 'guardian', 'cnn', 'aljazeera', 'npr', 'reuters_world'],
-    science: ['sciencedaily', 'nature', 'phys', 'space'],
-    culture: ['atlantic', 'newyorker'],
-    sports: ['espn']
-  };
+  let currentLayout = preferredLayout();
 
   function isDarkTheme() {
     const explicit = document.documentElement.getAttribute('data-theme');
@@ -184,14 +200,50 @@ document.addEventListener('DOMContentLoaded', () => {
 
   updateThemeIcons();
 
+  function populateSourceSelect(data) {
+    if (!sourceSelect) return;
+    const previous = sanitizeString(sourceSelect.value).trim() || pendingSourceFromUrl;
+    const sources = Array.isArray(data?.sources) ? data.sources : [];
+    const categories = data?.categories && typeof data.categories === 'object' ? data.categories : {};
+    const top = Array.isArray(data?.topSources) ? data.topSources : [];
+    const byId = new Map(sources.map((item) => [item.id, item]));
+
+    sourceTitleById.clear();
+    sources.forEach((item) => {
+      if (item?.id) sourceTitleById.set(item.id, item.title || item.id);
+    });
+
+    const seen = new Set();
+    const addGroup = (label, ids) => {
+      const items = (ids || []).filter((id) => byId.has(id) && !seen.has(id));
+      if (!items.length) return '';
+      items.forEach((id) => seen.add(id));
+      const options = items.map((id) => (
+        `<option value="${escapeHtml(id)}">${escapeHtml(byId.get(id).title || id)}</option>`
+      )).join('');
+      return `<optgroup label="${escapeHtml(label)}">${options}</optgroup>`;
+    };
+
+    let html = '<option value="">По разделу</option>';
+    html += addGroup('Главное', top);
+    Object.keys(CATEGORY_LABELS).forEach((cat) => {
+      html += addGroup(CATEGORY_LABELS[cat], categories[cat]);
+    });
+    html += addGroup('Другие', sources.map((item) => item.id).filter((id) => !seen.has(id)));
+
+    sourceSelect.innerHTML = html;
+    if (previous && Array.from(sourceSelect.options).some((option) => option.value === previous)) {
+      sourceSelect.value = previous;
+    }
+    pendingSourceFromUrl = '';
+  }
+
   async function loadSourceCatalog() {
     try {
       const resp = await fetch('/api/sources');
       if (!resp.ok) return;
       const data = await resp.json();
-      if (data?.ok && data.categories && typeof data.categories === 'object') {
-        CATEGORY_MAP = { ...CATEGORY_MAP, ...data.categories };
-      }
+      if (data?.ok) populateSourceSelect(data);
     } catch (err) {
       console.warn('Failed to load source catalog', err);
     }
@@ -289,25 +341,41 @@ document.addEventListener('DOMContentLoaded', () => {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
+  function getSelectedSource() {
+    return sanitizeString(sourceSelect?.value).trim() || sanitizeString(pendingSourceFromUrl).trim();
+  }
+
   function getCurrentSearchState() {
     return {
       query: sanitizeString(topicInput?.value).trim(),
-      source: sanitizeString(sourceSelect?.value).trim(),
+      source: getSelectedSource(),
       translate: isTranslateEnabled(),
-      viewAll: isViewAllEnabled()
+      viewAll: isViewAllEnabled(),
+      allSources: isAllSourcesEnabled(),
+      category: currentCategory
     };
   }
 
   function hasSavableSearchState(state = getCurrentSearchState()) {
-    return Boolean(state.query || state.source || !state.translate || state.viewAll);
+    return Boolean(
+      state.query
+      || state.source
+      || !state.translate
+      || state.viewAll
+      || state.allSources
+      || (state.category && state.category !== 'all')
+    );
   }
 
   function normalizeSavedSearchState(state) {
+    const category = sanitizeString(state?.category).trim() || 'all';
     return {
       query: sanitizeString(state?.query).trim(),
       source: sanitizeString(state?.source).trim(),
       translate: Boolean(state?.translate),
-      viewAll: Boolean(state?.viewAll)
+      viewAll: Boolean(state?.viewAll),
+      allSources: Boolean(state?.allSources),
+      category: KNOWN_CATEGORIES.has(category) ? category : 'all'
     };
   }
 
@@ -357,32 +425,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderQuickChips() {
     if (!quickChipsContainer) return;
-    const defaultChips = ['Израиль', 'Украина', 'Экономика', 'Технологии', 'ИИ', 'Наука', 'Спорт'];
     const topSearches = getTopSearchQueries(3);
-    
-    // Combine top frequent queries with default chips without duplicates
     const combined = [];
     const seen = new Set();
 
-    topSearches.forEach(q => {
-      const lower = q.toLowerCase();
-      if (!seen.has(lower)) {
-        seen.add(lower);
-        combined.push({ label: q, isTop: true });
-      }
-    });
+    const pushChip = (label, isTop) => {
+      const lower = sanitizeString(label).trim().toLowerCase();
+      if (!lower || seen.has(lower) || SECTION_CHIP_BLOCKLIST.has(lower)) return;
+      seen.add(lower);
+      combined.push({ label, isTop });
+    };
 
-    defaultChips.forEach(chip => {
-      const lower = chip.toLowerCase();
-      if (!seen.has(lower)) {
-        seen.add(lower);
-        combined.push({ label: chip, isTop: false });
-      }
-    });
+    topSearches.forEach((q) => pushChip(q, true));
+    DEFAULT_TOPIC_CHIPS.forEach((chip) => pushChip(chip, false));
 
-    quickChipsContainer.innerHTML = combined.map(item => `
+    quickChipsContainer.innerHTML = combined.map((item) => `
       <button type="button" class="chip-btn${item.isTop ? ' chip-btn--top' : ''}" data-quick-topic="${escapeHtml(item.label)}">${escapeHtml(item.label)}</button>
     `).join('');
+    updateChipActiveState();
+  }
+
+  function updateChipActiveState() {
+    if (!quickChipsContainer) return;
+    const query = sanitizeString(topicInput?.value).trim().toLowerCase();
+    quickChipsContainer.querySelectorAll('[data-quick-topic]').forEach((button) => {
+      button.classList.toggle('chip-btn--active', sanitizeString(button.dataset.quickTopic).trim().toLowerCase() === query);
+    });
   }
 
   function storeSavedSearches(savedSearches) {
@@ -395,12 +463,17 @@ document.addEventListener('DOMContentLoaded', () => {
       item.query === normalized.query &&
       item.source === normalized.source &&
       item.translate === normalized.translate &&
-      item.viewAll === normalized.viewAll
+      item.viewAll === normalized.viewAll &&
+      item.allSources === normalized.allSources &&
+      item.category === normalized.category
     ));
   }
 
   function getSourceLabel(source) {
-    if (!source) return 'Все источники';
+    if (!source) return currentCategory !== 'all'
+      ? (CATEGORY_LABELS[currentCategory] || 'По разделу')
+      : 'По разделу';
+    if (sourceTitleById.has(source)) return sourceTitleById.get(source);
     const option = Array.from(sourceSelect?.options || []).find(item => item.value === source);
     return sanitizeString(option?.textContent?.trim() || source);
   }
@@ -416,7 +489,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const sourceLabel = getSourceLabel(savedSearch?.source);
     const translateLabel = savedSearch?.translate ? 'Перевод' : 'Оригинал';
     parts.push(sourceLabel);
-    if (savedSearch?.viewAll) parts.push('Все материалы');
+    if (savedSearch?.viewAll) parts.push('Больше карточек');
+    if (savedSearch?.allSources) parts.push('Все источники');
+    if (savedSearch?.category && savedSearch.category !== 'all') {
+      parts.push(CATEGORY_LABELS[savedSearch.category] || savedSearch.category);
+    }
     parts.push(translateLabel);
     return parts.join(' · ');
   }
@@ -432,7 +509,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (savedSearch?.query) parts.push(`Запрос: ${savedSearch.query}`);
     if (savedSearch?.source) parts.push(`Источник: ${getSourceLabel(savedSearch.source)}`);
     parts.push(savedSearch?.translate ? 'Перевод на русский' : 'Оригинал');
-    if (savedSearch?.viewAll) parts.push('Показаны все материалы');
+    if (savedSearch?.viewAll) parts.push('Больше карточек');
+    if (savedSearch?.allSources) parts.push('Все источники');
+    if (savedSearch?.category && savedSearch.category !== 'all') {
+      parts.push(`Раздел: ${CATEGORY_LABELS[savedSearch.category] || savedSearch.category}`);
+    }
 
     return parts.join(' · ');
   }
@@ -455,10 +536,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const savedSearches = getSavedSearches();
     updateSaveSearchButtonState();
 
+    updateCollapsiblePanels();
     if (!savedSearches.length) {
-      savedSearchesContainer.innerHTML = `
-        <p class="saved-searches__empty">Пока ничего не сохранено. Нажмите кнопку выше, чтобы закрепить текущий поиск.</p>
-      `;
+      savedSearchesContainer.innerHTML = '';
       return;
     }
 
@@ -504,7 +584,9 @@ document.addEventListener('DOMContentLoaded', () => {
       item.query === currentState.query &&
       item.source === currentState.source &&
       item.translate === currentState.translate &&
-      item.viewAll === currentState.viewAll
+      item.viewAll === currentState.viewAll &&
+      item.allSources === currentState.allSources &&
+      item.category === currentState.category
     ));
     const now = new Date().toISOString();
     const nextSavedSearch = {
@@ -528,6 +610,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (sourceSelect) sourceSelect.value = savedSearch.source || '';
     if (translateToggle) translateToggle.checked = Boolean(savedSearch.translate);
     if (viewAllToggle) viewAllToggle.checked = Boolean(savedSearch.viewAll);
+    if (allSourcesToggle) allSourcesToggle.checked = Boolean(savedSearch.allSources);
+    setActiveCategory(savedSearch.category || 'all');
 
     topicInput?.focus();
     topicInput?.select();
@@ -636,15 +720,31 @@ document.addEventListener('DOMContentLoaded', () => {
     updateFavoriteButton(card, favoritesMemorySet.has(articleKey));
   }
 
+  function updateCollapsiblePanels() {
+    const savedCount = getSavedSearches().length;
+    const favoriteCount = getFavoriteArticles().length;
+
+    if (savedSearchesPanel) {
+      savedSearchesPanel.hidden = savedCount === 0;
+      if (savedCount === 0) savedSearchesPanel.open = false;
+    }
+    if (favoritesPanel) {
+      favoritesPanel.hidden = favoriteCount === 0;
+      if (favoriteCount === 0) favoritesPanel.open = false;
+    }
+    if (panelsContainer) {
+      panelsContainer.hidden = savedCount === 0 && favoriteCount === 0;
+    }
+  }
+
   function renderFavoritesPanel() {
     if (!favoritesListContainer) return;
     const favoriteArticles = getFavoriteArticles();
     updateFavoriteCount(favoriteArticles.length);
+    updateCollapsiblePanels();
 
     if (!favoriteArticles.length) {
-      favoritesListContainer.innerHTML = `
-        <p class="favorites-empty">Нажмите ☆ в карточке новости, чтобы сохранить ее на потом.</p>
-      `;
+      favoritesListContainer.innerHTML = '';
       return;
     }
 
@@ -804,18 +904,42 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  function setActiveCategory(category) {
+    const next = KNOWN_CATEGORIES.has(category) ? category : 'all';
+    currentCategory = next;
+    categoryTabs.forEach((tab) => {
+      const on = tab.dataset.category === next;
+      tab.classList.toggle('active', on);
+      tab.setAttribute('aria-selected', String(on));
+    });
+    if (next !== 'all' && allSourcesToggle) {
+      allSourcesToggle.checked = false;
+    }
+  }
+
   function syncStateFromUrl() {
     const params = new URLSearchParams(window.location.search);
     const q = params.get('q');
     const source = params.get('source');
+    const category = params.get('category');
 
     if (topicInput && q !== null) topicInput.value = q;
-    if (sourceSelect && source !== null) sourceSelect.value = source;
+    if (source) {
+      pendingSourceFromUrl = source;
+      if (sourceSelect && Array.from(sourceSelect.options).some((option) => option.value === source)) {
+        sourceSelect.value = source;
+        pendingSourceFromUrl = '';
+      }
+    }
     if (translateToggle) translateToggle.checked = parseBooleanParam(params.get('translate'), true);
     if (viewAllToggle) viewAllToggle.checked = parseBooleanParam(params.get('view_all'), false);
+    if (allSourcesToggle) allSourcesToggle.checked = parseBooleanParam(params.get('all_sources'), false);
+    if (category && KNOWN_CATEGORIES.has(category)) {
+      setActiveCategory(category);
+    }
   }
 
-  function syncUrlFromState({ query, source, translate, viewAll }) {
+  function syncUrlFromState({ query, source, translate, viewAll, allSources, category }) {
     const url = new URL(window.location.href);
 
     if (query) url.searchParams.set('q', query);
@@ -829,6 +953,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (viewAll) url.searchParams.set('view_all', 'true');
     else url.searchParams.delete('view_all');
+
+    if (allSources) url.searchParams.set('all_sources', 'true');
+    else url.searchParams.delete('all_sources');
+
+    if (category && category !== 'all') url.searchParams.set('category', category);
+    else url.searchParams.delete('category');
 
     const queryString = url.searchParams.toString();
     const nextUrl = queryString ? `${url.pathname}?${queryString}${url.hash}` : `${url.pathname}${url.hash}`;
@@ -970,6 +1100,10 @@ document.addEventListener('DOMContentLoaded', () => {
     return viewAllToggle?.checked ?? false;
   }
 
+  function isAllSourcesEnabled() {
+    return allSourcesToggle?.checked ?? false;
+  }
+
   async function translateViaApi(text) {
     const safeText = sanitizeString(text);
     if (!safeText) return '';
@@ -1078,33 +1212,27 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
-    let filteredArticles = articles;
-    if (currentCategory !== 'all') {
-      const allowedSources = CATEGORY_MAP[currentCategory] || [];
-      filteredArticles = articles.filter(art => allowedSources.includes(art.source));
-    }
-
-    if (!Array.isArray(filteredArticles) || filteredArticles.length === 0) {
-      searchFeedback.textContent = query ? `Ничего не найдено по запросу «${query}».` : 'Нет материалов в выбранной категории.';
+    if (!Array.isArray(articles) || articles.length === 0) {
+      searchFeedback.textContent = query ? `Ничего не найдено по запросу «${query}».` : 'Нет материалов в выбранном разделе.';
       renderEmptyState(query, source);
       return;
     }
 
-    searchFeedback.textContent = `Показаны ${filteredArticles.length} материалов.`;
+    searchFeedback.textContent = `Показаны ${articles.length} материалов.`;
     newsContainer.innerHTML = '';
 
-    // Ensure memory set is loaded
     getFavoriteArticles();
 
     const fragment = document.createDocumentFragment();
-    filteredArticles.forEach(article => {
+    articles.forEach(article => {
       fragment.appendChild(createCard(article, highlightRegexes, translate));
     });
     newsContainer.appendChild(fragment);
     updateLayoutView();
+    updateChipActiveState();
 
     if (translate) {
-      ensureArticlesTranslated(filteredArticles, searchToken);
+      ensureArticlesTranslated(articles, searchToken);
     }
   }
 
@@ -1270,8 +1398,9 @@ document.addEventListener('DOMContentLoaded', () => {
   async function fetchAndDisplayNews(options = {}) {
     const { initial = false, refresh = false } = options;
     const query = sanitizeString(topicInput?.value).trim();
-    const source = sanitizeString(sourceSelect?.value);
+    const source = getSelectedSource();
     const viewAll = isViewAllEnabled();
+    const allSources = isAllSourcesEnabled();
     const translate = isTranslateEnabled();
 
     updateSaveSearchButtonState();
@@ -1286,11 +1415,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (query) params.set('q', query);
     if (source) params.set('source', source);
     if (viewAll) params.set('view_all', 'true');
+    if (allSources) params.set('all_sources', 'true');
     if (refresh) params.set('refresh', 'true');
     if (currentCategory !== 'all') params.set('category', currentCategory);
     params.set('translate', translate ? 'true' : 'false');
 
-    syncUrlFromState({ query, source, translate, viewAll });
+    syncUrlFromState({ query, source, translate, viewAll, allSources, category: currentCategory });
+    updateChipActiveState();
 
     if (activeSearchController) {
       activeSearchController.abort();
@@ -1394,9 +1525,9 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   sourceSelect?.addEventListener('change', () => {
+    pendingSourceFromUrl = '';
     if (sourceSelect.value) {
-      categoryTabs.forEach(t => t.classList.toggle('active', t.dataset.category === 'all'));
-      currentCategory = 'all';
+      setActiveCategory('all');
     }
     fetchAndDisplayNews();
   });
@@ -1474,6 +1605,27 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchAndDisplayNews();
   });
 
+  allSourcesToggle?.addEventListener('change', () => {
+    if (isAllSourcesEnabled()) {
+      setActiveCategory('all');
+      if (sourceSelect) sourceSelect.value = '';
+      pendingSourceFromUrl = '';
+    }
+    updateSaveSearchButtonState();
+    fetchAndDisplayNews();
+  });
+
+  brandHome?.addEventListener('click', (event) => {
+    event.preventDefault();
+    if (topicInput) topicInput.value = '';
+    if (sourceSelect) sourceSelect.value = '';
+    pendingSourceFromUrl = '';
+    if (viewAllToggle) viewAllToggle.checked = false;
+    if (allSourcesToggle) allSourcesToggle.checked = false;
+    setActiveCategory('all');
+    fetchAndDisplayNews();
+  });
+
   document.addEventListener('keydown', event => {
     if (event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey && !isEditableTarget(event.target)) {
       event.preventDefault();
@@ -1509,15 +1661,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   categoryTabs.forEach(tab => {
     tab.addEventListener('click', () => {
-      categoryTabs.forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      currentCategory = tab.dataset.category || 'all';
+      const next = tab.dataset.category || 'all';
+      setActiveCategory(next);
 
-      if (currentCategory !== 'all' && sourceSelect) {
+      if (next !== 'all' && sourceSelect) {
         sourceSelect.value = '';
+        pendingSourceFromUrl = '';
       }
 
-      // Always re-fetch so server applies category → source subset
       fetchAndDisplayNews();
     });
   });

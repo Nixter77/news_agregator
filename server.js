@@ -112,16 +112,21 @@ const CSP_HEADER =
 
 /**
  * Resolve which feed keys to query for a search.
- * category 'all' / empty must NOT force full fan-out (TOP_SOURCES path).
+ * - explicit source wins
+ * - category subset wins over scope toggles
+ * - allSources = full catalog (explicit «Все источники»)
+ * - a free-text query without category still fans out (chips / search)
+ * - viewAll is a result LIMIT only and must not expand the feed set
  */
-function resolveSources({ sourceKey, normQuery, viewAll, category, skipKeys } = {}) {
+function resolveSources({ sourceKey, normQuery, viewAll, allSources, category, skipKeys } = {}) {
+  void viewAll;
   if (sourceKey && SOURCES[sourceKey]) return [sourceKey];
 
   const cat = category && category !== 'all' ? category : null;
   let keys;
   if (cat && CATEGORY_SOURCES[cat]) {
     keys = CATEGORY_SOURCES[cat].filter((id) => SOURCES[id]);
-  } else if (normQuery || viewAll) {
+  } else if (allSources || normQuery) {
     keys = Object.keys(SOURCES);
   } else {
     keys = TOP_SOURCES.filter((id) => SOURCES[id]);
@@ -824,10 +829,10 @@ class SearchService {
    * @returns {Promise<{ results: object[], upstreamFailed: boolean, degraded: boolean, cached: boolean, generatedAt: string|null, sourcesFailed: string[], sourcesUsed: string[] }>}
    */
   async search(query, sourceKey, options = {}) {
-    const { viewAll, refresh, category } = options;
+    const { viewAll, refresh, category, allSources } = options;
     const normQuery = (query || '').trim().toLowerCase();
     const cat = category && category !== 'all' ? category : 'all';
-    const cacheKey = `search:${sourceKey || 'all'}:${normQuery}:${Boolean(viewAll)}:${cat}`;
+    const cacheKey = `search:${sourceKey || 'all'}:${normQuery}:${Boolean(viewAll)}:${Boolean(allSources)}:${cat}`;
 
     if (!refresh) {
       const cached = this.searchCache.get(cacheKey);
@@ -843,7 +848,13 @@ class SearchService {
       }
     }
 
-    const promise = this._searchUncached(query, sourceKey, { viewAll, refresh, category: cat, cacheKey });
+    const promise = this._searchUncached(query, sourceKey, {
+      viewAll,
+      refresh,
+      category: cat,
+      allSources,
+      cacheKey,
+    });
     this.pendingSearches.set(cacheKey, promise);
     try {
       return await promise;
@@ -854,12 +865,13 @@ class SearchService {
     }
   }
 
-  async _searchUncached(query, sourceKey, { viewAll, refresh, category, cacheKey }) {
+  async _searchUncached(query, sourceKey, { viewAll, refresh, category, allSources, cacheKey }) {
     const normQuery = (query || '').trim().toLowerCase();
     const sources = resolveSources({
       sourceKey,
       normQuery,
       viewAll,
+      allSources,
       category,
       skipKeys: this.rssService.health?.openKeys(),
     });
@@ -1132,6 +1144,7 @@ app.get('/api/search', async (req, res) => {
     const sourceKey = requireSingleString(req.query.source, 'source').trim();
     const categoryRaw = requireSingleString(req.query.category, 'category').trim();
     const viewAll = requireSingleString(req.query.view_all, 'view_all');
+    const allSources = requireSingleString(req.query.all_sources, 'all_sources');
     const refresh = requireSingleString(req.query.refresh, 'refresh');
     const translate = requireSingleString(req.query.translate, 'translate');
     const shouldTranslate = translate !== 'false';
@@ -1167,6 +1180,7 @@ app.get('/api/search', async (req, res) => {
       sourcesUsed,
     } = await searchService.search(query, sourceKey, {
       viewAll: viewAll === 'true',
+      allSources: allSources === 'true',
       refresh: refresh === 'true',
       category,
     });

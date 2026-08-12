@@ -74,6 +74,11 @@ test('homepage renders basic layout', async () => {
   assert.match(response.headers.get('content-type') || '', /text\/html/);
   const html = await response.text();
   assert.match(html, /js\/theme-boot\.js\?v=/);
+  assert.match(html, /Главное/);
+  assert.match(html, /Больше карточек/);
+  assert.match(html, /Все источники/);
+  assert.doesNotMatch(html, /Все материалы/);
+  assert.match(html, /id="all-sources-toggle"/);
 });
 
 test('dark theme tokens are valid standalone CSS rules', async () => {
@@ -308,15 +313,50 @@ function xmlResponse(body = SAMPLE_RSS, status = 200) {
 }
 
 test('resolveSources uses top tier and honors skip keys', () => {
-  const { resolveSources, TOP_SOURCES } = app.helpers;
+  const { resolveSources, TOP_SOURCES, SOURCES } = app.helpers;
+  const allKeys = Object.keys(SOURCES);
   const top = resolveSources({});
   assert.deepEqual(top, TOP_SOURCES);
   assert.equal(top.includes('reuters_world'), false);
-  assert.deepEqual(resolveSources({ sourceKey: 'bbc', category: 'tech' }), ['bbc']);
+  assert.deepEqual(resolveSources({ viewAll: true }), TOP_SOURCES);
+  assert.deepEqual(resolveSources({ allSources: true }).sort(), allKeys.slice().sort());
+  assert.deepEqual(resolveSources({ sourceKey: 'bbc', category: 'tech', allSources: true }), ['bbc']);
   assert.ok(resolveSources({ category: 'tech' }).includes('techcrunch'));
+  assert.equal(resolveSources({ category: 'tech', viewAll: true, allSources: true }).includes('espn'), false);
+  assert.deepEqual(resolveSources({ normQuery: 'israel' }).sort(), allKeys.slice().sort());
   const skipped = resolveSources({ skipKeys: new Set(['bbc']) });
   assert.equal(skipped.includes('bbc'), false);
   assert.ok(skipped.length > 0);
+});
+
+test('search view_all raises the limit without expanding feed set', async () => {
+  app.services.setFetchImpl(async () => xmlResponse());
+  try {
+    const response = await fetch(`${baseUrl}/api/search?view_all=true&translate=false`, {
+      headers: { connection: 'close' },
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.ok(body.sourcesUsed.every((id) => app.helpers.TOP_SOURCES.includes(id)));
+    assert.equal(body.sourcesUsed.includes('espn'), false);
+    assert.ok(body.sourcesUsed.length > 0 && body.sourcesUsed.length <= app.helpers.TOP_SOURCES.length);
+  } finally {
+    app.services.setFetchImpl(null);
+  }
+});
+
+test('search all_sources fans out the full catalog', async () => {
+  app.services.setFetchImpl(async () => xmlResponse());
+  try {
+    const response = await fetch(`${baseUrl}/api/search?all_sources=true&translate=false`, {
+      headers: { connection: 'close' },
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.sourcesUsed.length, Object.keys(app.helpers.SOURCES).length);
+  } finally {
+    app.services.setFetchImpl(null);
+  }
 });
 
 test('parallel fetchFeed shares one origin GET', async () => {
@@ -403,7 +443,7 @@ test('search cache hit preserves degraded metadata', async () => {
     sourcesFailed: ['cnn'],
     sourcesUsed: ['bbc'],
   };
-  app.services.searchService.searchCache.set('search:all::false:all', payload, 60_000);
+  app.services.searchService.searchCache.set('search:all::false:false:all', payload, 60_000);
 
   const result = await app.services.searchService.search('', '', {
     viewAll: false,
