@@ -47,6 +47,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const statsCloseBtn = document.getElementById('stats-close-btn');
   const statsKeywords = document.getElementById('stats-keywords');
   const statsSources = document.getElementById('stats-sources');
+  const toastRegion = document.getElementById('toast-region');
+  const categoryTablist = document.querySelector('.category-tabs');
+  let toastTimer = 0;
 
   const relativeTimeFormatter = new Intl.RelativeTimeFormat('ru', { numeric: 'auto' });
   const absoluteTimeFormatter = new Intl.DateTimeFormat('ru-RU', {
@@ -327,9 +330,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return true;
     } catch (error) {
       console.warn('Failed to write JSON storage entry', error);
-      if (searchFeedback) {
-        searchFeedback.textContent = 'Не удалось сохранить локально (хранилище недоступно).';
-      }
+      showToast('Не удалось сохранить локально (хранилище недоступно).');
       return false;
     }
   }
@@ -449,7 +450,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!quickChipsContainer) return;
     const query = sanitizeString(topicInput?.value).trim().toLowerCase();
     quickChipsContainer.querySelectorAll('[data-quick-topic]').forEach((button) => {
-      button.classList.toggle('chip-btn--active', sanitizeString(button.dataset.quickTopic).trim().toLowerCase() === query);
+      const on = sanitizeString(button.dataset.quickTopic).trim().toLowerCase() === query;
+      button.classList.toggle('chip-btn--active', on);
+      button.setAttribute('aria-pressed', String(on));
     });
   }
 
@@ -574,7 +577,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function saveCurrentSearch() {
     const currentState = normalizeSavedSearchState(getCurrentSearchState());
     if (!hasSavableSearchState(currentState)) {
-      searchFeedback.textContent = 'Сначала введите запрос или выберите фильтры, которые хотите сохранить.';
+      showToast('Сначала введите запрос или выберите фильтры, которые хотите сохранить.');
       updateSaveSearchButtonState();
       return;
     }
@@ -602,7 +605,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     storeSavedSearches(nextSavedSearches);
     renderSavedSearches();
-    searchFeedback.textContent = 'Поиск сохранён.';
+    showToast('Поиск сохранён.');
   }
 
   function applySavedSearch(savedSearch) {
@@ -623,7 +626,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const nextSavedSearches = getSavedSearches().filter(item => item.id !== savedSearchId);
     storeSavedSearches(nextSavedSearches);
     renderSavedSearches();
-    searchFeedback.textContent = 'Сохранённый поиск удалён.';
+    showToast('Сохранённый поиск удалён.');
   }
 
   function getArticleKey(article) {
@@ -796,7 +799,7 @@ document.addEventListener('DOMContentLoaded', () => {
     storeFavoriteArticles(nextFavorites);
     syncFavoriteButtonState(articleKey);
     renderFavoritesPanel();
-    searchFeedback.textContent = 'Статья добавлена в избранное.';
+    showToast('Статья добавлена в избранное.');
   }
 
   function removeFavoriteArticle(articleKey, feedbackMessage = 'Статья удалена из избранного.') {
@@ -804,7 +807,7 @@ document.addEventListener('DOMContentLoaded', () => {
     storeFavoriteArticles(nextFavorites);
     syncFavoriteButtonState(articleKey);
     renderFavoritesPanel();
-    if (feedbackMessage) searchFeedback.textContent = feedbackMessage;
+    if (feedbackMessage) showToast(feedbackMessage);
   }
 
   // Open native HTML5 <dialog> modal
@@ -838,6 +841,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="modal-article-meta">
           <span class="badge">${escapeHtml(sourceTitle)}</span>
           <span>${escapeHtml(timeMeta.relative)}</span>
+          <span id="modal-reading-time" hidden></span>
         </div>
         <p class="modal-article-text modal-article-text--loading" id="modal-text-content">Загружаем текст статьи...</p>
         <p><a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">Читать в оригинале ↗</a></p>
@@ -892,6 +896,13 @@ document.addEventListener('DOMContentLoaded', () => {
         ? sanitizeString(article?.snippet_ru || article?.snippet)
         : sanitizeString(article?.snippet)) || 'Полный текст недоступен для этой новости.';
     }
+
+    const readingEl = document.getElementById('modal-reading-time');
+    if (readingEl) {
+      const minutes = getReadingTime(textEl.textContent, translate);
+      readingEl.hidden = false;
+      readingEl.textContent = `${minutes} мин`;
+    }
   }
 
   newsModalClose?.addEventListener('click', () => {
@@ -911,6 +922,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const on = tab.dataset.category === next;
       tab.classList.toggle('active', on);
       tab.setAttribute('aria-selected', String(on));
+      tab.tabIndex = on ? 0 : -1;
     });
     if (next !== 'all' && allSourcesToggle) {
       allSourcesToggle.checked = false;
@@ -999,10 +1011,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderEmptyState(query, source) {
     if (!newsContainer) return;
+    const canReset = Boolean(query || source || currentCategory !== 'all' || isViewAllEnabled() || isAllSourcesEnabled());
     newsContainer.innerHTML = `
-      <div style="grid-column: 1 / -1; padding: 40px; text-align: center;">
+      <div class="feed-status">
         <h3>Ничего не найдено</h3>
-        <p style="color: var(--text-secondary); margin-top: 8px;">Попробуйте изменить ключевые слова или сбросить фильтры.</p>
+        <p>Попробуйте изменить ключевые слова или сбросить фильтры.</p>
+        <div class="feed-status__actions">
+          <button type="button" class="btn-primary" data-retry-search>Повторить</button>
+          ${canReset ? '<button type="button" class="btn-ghost" data-reset-filters>Сбросить</button>' : ''}
+        </div>
       </div>
     `;
   }
@@ -1010,9 +1027,12 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderErrorState(message) {
     if (!newsContainer) return;
     newsContainer.innerHTML = `
-      <div style="grid-column: 1 / -1; padding: 40px; text-align: center;">
+      <div class="feed-status">
         <h3>Ошибка загрузки</h3>
-        <p style="color: var(--text-secondary); margin-top: 8px;">${escapeHtml(message)}</p>
+        <p>${escapeHtml(message)}</p>
+        <div class="feed-status__actions">
+          <button type="button" class="btn-primary" data-retry-search>Повторить</button>
+        </div>
       </div>
     `;
   }
@@ -1084,9 +1104,22 @@ document.addEventListener('DOMContentLoaded', () => {
     return `${parts.join('. ')}.`;
   }
 
+  function showToast(message) {
+    const text = sanitizeString(message).trim();
+    if (!toastRegion || !text) return;
+    toastRegion.textContent = text;
+    toastRegion.classList.add('toast-region--visible');
+    window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => {
+      toastRegion.classList.remove('toast-region--visible');
+    }, 2800);
+  }
+
   function setLoading(isLoading) {
-    if (!loadingIndicator) return;
-    loadingIndicator.classList.toggle('d-none', !isLoading);
+    loadingIndicator?.classList.toggle('d-none', !isLoading);
+    if (searchButton) searchButton.disabled = isLoading;
+    if (refreshButton) refreshButton.disabled = isLoading;
+    newsContainer?.setAttribute('aria-busy', String(isLoading));
     if (newsContainer) {
       newsContainer.style.opacity = isLoading ? '0.6' : '1';
     }
@@ -1129,15 +1162,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function updateLayoutView() {
     if (!newsContainer) return;
-    if (currentLayout === 'list') {
-      newsContainer.classList.add('view-list');
-      layoutListBtn?.classList.add('active');
-      layoutGridBtn?.classList.remove('active');
-    } else {
-      newsContainer.classList.remove('view-list');
-      layoutListBtn?.classList.remove('active');
-      layoutGridBtn?.classList.add('active');
-    }
+    const isList = currentLayout === 'list';
+    newsContainer.classList.toggle('view-list', isList);
+    layoutListBtn?.classList.toggle('active', isList);
+    layoutGridBtn?.classList.toggle('active', !isList);
+    layoutListBtn?.setAttribute('aria-pressed', String(isList));
+    layoutGridBtn?.setAttribute('aria-pressed', String(!isList));
   }
 
   function buildStatsDashboard(articles) {
@@ -1224,8 +1254,8 @@ document.addEventListener('DOMContentLoaded', () => {
     getFavoriteArticles();
 
     const fragment = document.createDocumentFragment();
-    articles.forEach(article => {
-      fragment.appendChild(createCard(article, highlightRegexes, translate));
+    articles.forEach((article, index) => {
+      fragment.appendChild(createCard(article, highlightRegexes, translate, index));
     });
     newsContainer.appendChild(fragment);
     updateLayoutView();
@@ -1250,7 +1280,7 @@ document.addEventListener('DOMContentLoaded', () => {
       token,
       re: new RegExp(`(${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
     }));
-    const titleEl = card.querySelector('.news-card-title');
+    const titleEl = card.querySelector('.news-card-open') || card.querySelector('.news-card-title');
     const textEl = card.querySelector('.news-card-text');
     if (titleEl) titleEl.innerHTML = highlightMatchesWithRegexes(title, highlightRegexes);
     if (textEl) textEl.innerHTML = highlightMatchesWithRegexes(snippet, highlightRegexes);
@@ -1261,7 +1291,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const badge = document.createElement('span');
         badge.className = 'news-card-badge news-card-badge--lang';
         badge.title = 'Переведено на русский';
-        badge.textContent = 'RU Перевод';
+        badge.textContent = 'RU';
         badges.appendChild(badge);
       }
     }
@@ -1330,7 +1360,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function createCard(article, highlightRegexes, translate = true) {
+  function createCard(article, highlightRegexes, translate = true, index = 0) {
     const col = document.createElement('div');
     col.className = 'news-grid-item';
 
@@ -1350,17 +1380,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const safeAlt = escapeHtml(title);
     const safeArticleKey = escapeHtml(articleKey);
     const favoriteIcon = isFavorite ? '★' : '☆';
-
-    const readingTime = getReadingTime(snippet, translate);
+    const eager = index < 2;
     const langBadge = isTranslated
-      ? `<span class="news-card-badge news-card-badge--lang" title="Переведено на русский">RU Перевод</span>`
+      ? `<span class="news-card-badge news-card-badge--lang" title="Переведено на русский">RU</span>`
       : '';
 
     col.innerHTML = `
       <article
         class="news-card${isFavorite ? ' news-card--bookmarked' : ''}"
-        tabindex="0"
-        role="button"
         data-article-key="${safeArticleKey}"
       >
         <div class="news-card-media">
@@ -1370,23 +1397,21 @@ document.addEventListener('DOMContentLoaded', () => {
             data-favorite-toggle="${safeArticleKey}"
             aria-pressed="${isFavorite}"
             aria-label="${isFavorite ? 'Убрать из избранного' : 'Добавить в избранное'}"
-          ><span>${favoriteIcon}</span></button>
-          <img src="${safeImage}" class="news-card-img" alt="${safeAlt}" loading="lazy" decoding="async">
+          ><span aria-hidden="true">${favoriteIcon}</span></button>
+          <img src="${safeImage}" class="news-card-img" alt="${safeAlt}" loading="${eager ? 'eager' : 'lazy'}" decoding="async"${eager ? ' fetchpriority="high"' : ''}>
           <div class="news-card-badges">
-            <span class="news-card-badge">${safeSourceTitle}</span>
             ${langBadge}
           </div>
         </div>
         <div class="news-card-body">
-          <h3 class="news-card-title">${highlightedTitle}</h3>
+          <h3 class="news-card-title">
+            <button type="button" class="news-card-open">${highlightedTitle}</button>
+          </h3>
           <p class="news-card-text">${highlightedSnippet}</p>
         </div>
         <footer class="news-card-meta">
           <span class="news-meta-source">${safeSourceTitle}</span>
-          <div>
-            <span>${readingTime} мин</span> · 
-            <span title="${timeMeta.absolute}">${timeMeta.relative}</span>
-          </div>
+          <span title="${timeMeta.absolute}">${timeMeta.relative}</span>
         </footer>
       </article>
     `;
@@ -1557,6 +1582,14 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   newsContainer?.addEventListener('click', async event => {
+    if (event.target.closest('[data-retry-search]')) {
+      fetchAndDisplayNews({ refresh: true });
+      return;
+    }
+    if (event.target.closest('[data-reset-filters]')) {
+      resetToHome();
+      return;
+    }
     const favoriteToggle = event.target.closest('[data-favorite-toggle]');
     if (favoriteToggle) {
       const card = favoriteToggle.closest('.news-card');
@@ -1615,8 +1648,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchAndDisplayNews();
   });
 
-  brandHome?.addEventListener('click', (event) => {
-    event.preventDefault();
+  function resetToHome() {
     if (topicInput) topicInput.value = '';
     if (sourceSelect) sourceSelect.value = '';
     pendingSourceFromUrl = '';
@@ -1624,6 +1656,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (allSourcesToggle) allSourcesToggle.checked = false;
     setActiveCategory('all');
     fetchAndDisplayNews();
+  }
+
+  brandHome?.addEventListener('click', (event) => {
+    event.preventDefault();
+    resetToHome();
   });
 
   document.addEventListener('keydown', event => {
@@ -1649,6 +1686,7 @@ document.addEventListener('DOMContentLoaded', () => {
   statsToggleBtn?.addEventListener('click', () => {
     const isHidden = statsDashboard?.classList.toggle('d-none');
     statsToggleBtn?.classList.toggle('active', !isHidden);
+    statsToggleBtn?.setAttribute('aria-expanded', String(!isHidden));
     if (!isHidden && clientArticlesCache.length > 0) {
       buildStatsDashboard(clientArticlesCache);
     }
@@ -1657,6 +1695,7 @@ document.addEventListener('DOMContentLoaded', () => {
   statsCloseBtn?.addEventListener('click', () => {
     statsDashboard?.classList.add('d-none');
     statsToggleBtn?.classList.remove('active');
+    statsToggleBtn?.setAttribute('aria-expanded', 'false');
   });
 
   categoryTabs.forEach(tab => {
@@ -1671,6 +1710,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
       fetchAndDisplayNews();
     });
+  });
+
+  categoryTablist?.addEventListener('keydown', (event) => {
+    const tabs = Array.from(categoryTabs);
+    const currentIndex = tabs.indexOf(event.target);
+    if (currentIndex < 0) return;
+
+    let nextIndex = -1;
+    if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabs.length;
+    else if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = tabs.length - 1;
+    else return;
+
+    event.preventDefault();
+    tabs[nextIndex].focus();
+    tabs[nextIndex].click();
   });
 
   syncStateFromUrl();

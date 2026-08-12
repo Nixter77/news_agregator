@@ -11,9 +11,10 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/style.css?v=20260812e">
+    <link rel="stylesheet" href="css/style.css?v=20260813a">
 </head>
 <body>
+    <a class="skip-link" href="#news-feed">К ленте</a>
 
     <main class="main-layout">
         <header class="app-chrome">
@@ -54,25 +55,25 @@
                 <div class="chrome-nav">
                     <div class="nav-scroll">
                         <div class="category-tabs" role="tablist" aria-label="Разделы">
-                            <button type="button" class="category-tab active" role="tab" aria-selected="true" data-category="all">Главное</button>
-                            <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="tech">Технологии</button>
-                            <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="business">Бизнес</button>
-                            <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="world">Мир</button>
-                            <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="science">Наука</button>
-                            <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="culture">Культура</button>
-                            <button type="button" class="category-tab" role="tab" aria-selected="false" data-category="sports">Спорт</button>
+                            <button type="button" class="category-tab active" role="tab" aria-selected="true" tabindex="0" data-category="all">Главное</button>
+                            <button type="button" class="category-tab" role="tab" aria-selected="false" tabindex="-1" data-category="tech">Технологии</button>
+                            <button type="button" class="category-tab" role="tab" aria-selected="false" tabindex="-1" data-category="business">Бизнес</button>
+                            <button type="button" class="category-tab" role="tab" aria-selected="false" tabindex="-1" data-category="world">Мир</button>
+                            <button type="button" class="category-tab" role="tab" aria-selected="false" tabindex="-1" data-category="science">Наука</button>
+                            <button type="button" class="category-tab" role="tab" aria-selected="false" tabindex="-1" data-category="culture">Культура</button>
+                            <button type="button" class="category-tab" role="tab" aria-selected="false" tabindex="-1" data-category="sports">Спорт</button>
                         </div>
                     </div>
 
                     <div class="layout-controls">
-                        <button type="button" id="stats-toggle-btn" class="icon-btn" title="Аналитика трендов" aria-label="Аналитика">
+                        <button type="button" id="stats-toggle-btn" class="icon-btn" title="Аналитика трендов" aria-label="Аналитика" aria-expanded="false" aria-controls="stats-dashboard">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
                         </button>
                         <div class="view-switch-toggle">
-                            <button type="button" id="layout-grid-btn" class="layout-btn" title="Вид сеткой" aria-label="Сетка">
+                            <button type="button" id="layout-grid-btn" class="layout-btn" title="Вид сеткой" aria-label="Сетка" aria-pressed="false">
                                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
                             </button>
-                            <button type="button" id="layout-list-btn" class="layout-btn" title="Вид списком" aria-label="Список">
+                            <button type="button" id="layout-list-btn" class="layout-btn" title="Вид списком" aria-label="Список" aria-pressed="false">
                                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
                             </button>
                         </div>
@@ -93,18 +94,18 @@
                 <div class="chrome-tools">
                     <div class="toggles-group">
                         <label class="toggle-pill">
-                            <input type="checkbox" id="translate-toggle" checked>
-                            <span class="toggle-slider"></span>
+                            <input type="checkbox" id="translate-toggle" role="switch" checked>
+                            <span class="toggle-slider" aria-hidden="true"></span>
                             <span class="toggle-text">Перевод</span>
                         </label>
                         <label class="toggle-pill" title="До 100 материалов из того же набора источников">
-                            <input type="checkbox" id="view-all-toggle">
-                            <span class="toggle-slider"></span>
+                            <input type="checkbox" id="view-all-toggle" role="switch">
+                            <span class="toggle-slider" aria-hidden="true"></span>
                             <span class="toggle-text">Больше карточек</span>
                         </label>
                         <label class="toggle-pill" title="Искать по всем лентам, не только по Главное">
-                            <input type="checkbox" id="all-sources-toggle">
-                            <span class="toggle-slider"></span>
+                            <input type="checkbox" id="all-sources-toggle" role="switch">
+                            <span class="toggle-slider" aria-hidden="true"></span>
                             <span class="toggle-text">Все источники</span>
                         </label>
                     </div>
@@ -133,11 +134,12 @@
             </details>
         </section>
 
-        <section class="news-feed-section">
+        <section class="news-feed-section" id="news-feed" aria-labelledby="feed-heading">
+            <h2 class="visually-hidden" id="feed-heading">Лента новостей</h2>
             <div id="stats-dashboard" class="stats-dashboard d-none">
                 <div class="stats-header">
                     <span class="stats-title">Аналитика новостного потока</span>
-                    <button type="button" class="close-btn" id="stats-close-btn">&times;</button>
+                    <button type="button" class="close-btn" id="stats-close-btn" aria-label="Закрыть аналитику">&times;</button>
                 </div>
                 <div class="stats-grid">
                     <div class="stats-card">
@@ -160,11 +162,13 @@
             <div id="news-container" class="news-grid">
             </div>
         </section>
-
-        <footer class="app-footer">
-            <p>Источники: BBC, Al Jazeera, The Guardian, CNN, NPR, Reuters, TechCrunch, The Verge, Forbes и другие</p>
-        </footer>
     </main>
+
+    <footer class="app-footer">
+        <p>Источники: BBC, Al Jazeera, The Guardian, CNN, NPR, Reuters, TechCrunch, The Verge, Forbes и другие</p>
+    </footer>
+
+    <div id="toast-region" class="toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
 
     <dialog class="article-modal" id="news-modal" aria-labelledby="news-modal-label">
         <div class="modal-card">
@@ -177,6 +181,6 @@
         </div>
     </dialog>
 
-    <script src="js/main.js?v=20260812e" defer></script>
+    <script src="js/main.js?v=20260813a" defer></script>
 </body>
 </html>

@@ -79,6 +79,11 @@ test('homepage renders basic layout', async () => {
   assert.match(html, /Все источники/);
   assert.doesNotMatch(html, /Все материалы/);
   assert.match(html, /id="all-sources-toggle"/);
+  assert.match(html, /class="skip-link"/);
+  assert.match(html, /id="feed-heading"/);
+  assert.match(html, /id="toast-region"/);
+  assert.match(html, /role="switch"/);
+  assert.match(html, /<\/main>[\s\S]*<footer class="app-footer">/);
 });
 
 test('dark theme tokens are valid standalone CSS rules', async () => {
@@ -88,6 +93,9 @@ test('dark theme tokens are valid standalone CSS rules', async () => {
   assert.match(css, /\[data-theme="dark"\]\s*\{/);
   assert.match(css, /@media \(prefers-color-scheme: dark\)/);
   assert.doesNotMatch(css, /\[data-theme="dark"\],\s*@media/);
+  assert.match(css, /:focus-visible/);
+  assert.match(css, /prefers-reduced-motion/);
+  assert.doesNotMatch(css, /\.toggle-pill input\s*\{\s*display:\s*none/);
 });
 
 test('rejects unknown sources before performing a search', async () => {
