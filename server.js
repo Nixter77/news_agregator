@@ -48,7 +48,8 @@ const CONFIG = {
     MAX_RESULTS_VIEW_ALL: 100,
     MAX_RESULTS_DEFAULT: 30,
     MAX_TRANSLATED_RESULTS: 10,
-    TRANSLATE_BUDGET_MS: 4000,
+    TRANSLATE_BUDGET_MS: 0,
+    QUERY_TRANSLATE_MS: 400,
   },
   TRANSLATION: {
     QUEUE_LIMIT: 200,
@@ -154,6 +155,47 @@ function tokenize(text) {
     .split(/[\s,.;:!?"'()\[\]{}<>/@#%^&*+=|~`]+/)
     .map((t) => t.trim())
     .filter((t) => t.length >= 2);
+}
+
+const CYRILLIC_TO_LATIN = {
+  а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z',
+  и: 'i', й: 'i', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r',
+  с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sch',
+  ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya',
+};
+
+function transliterateCyrillic(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[а-яё]/g, (ch) => (CYRILLIC_TO_LATIN[ch] != null ? CYRILLIC_TO_LATIN[ch] : ch));
+}
+
+function hasCyrillic(text) {
+  return /[а-яё]/i.test(String(text || ''));
+}
+
+const QUERY_ALIASES = {
+  израиль: ['israel', 'israeli'],
+  украина: ['ukraine', 'ukrainian'],
+  экономика: ['economy', 'economic'],
+  технологии: ['technology', 'technologies', 'tech'],
+  ии: ['ai', 'artificial'],
+  наука: ['science', 'scientific'],
+  спорт: ['sport', 'sports'],
+  трамп: ['trump'],
+};
+
+function expandQueryTerms(normQuery, translatedQuery = '') {
+  const translitQuery = hasCyrillic(normQuery) ? transliterateCyrillic(normQuery) : '';
+  const aliases = QUERY_ALIASES[normQuery] || [];
+  const uniqueTokens = [...new Set(
+    tokenize(normQuery)
+      .concat(tokenize(translatedQuery), tokenize(translitQuery), aliases.flatMap((alias) => tokenize(alias)))
+  )];
+  const needles = [...new Set(
+    [normQuery, translitQuery, String(translatedQuery || '').toLowerCase(), ...aliases].filter(Boolean)
+  )];
+  return { translitQuery, uniqueTokens, needles };
 }
 
 function scoreArticle(article, tokens) {
@@ -851,15 +893,30 @@ class SearchService {
     const deduplicatedArticles = dedupeArticles(allArticles);
 
     let results = deduplicatedArticles;
+    let queryTranslateFailed = false;
     if (normQuery) {
       let translatedQuery = '';
       try {
-        translatedQuery = (await this.translationService.translate(normQuery, 'en')) || '';
+        const translated = await withTimeout(
+          this.translationService.translate(normQuery, 'en'),
+          CONFIG.SEARCH.QUERY_TRANSLATE_MS,
+          null
+        );
+        if (!translated || !String(translated).trim()) queryTranslateFailed = true;
+        else translatedQuery = translated;
       } catch (err) {
+        queryTranslateFailed = true;
         console.warn('[search] query translate failed:', err.message);
       }
 
-      const uniqueTokens = [...new Set(tokenize(normQuery).concat(tokenize(translatedQuery)))];
+      const { uniqueTokens, needles } = expandQueryTerms(normQuery, translatedQuery);
+
+      const matchesQuery = (article, needle) => {
+        if (!needle) return false;
+        const title = String(article.title || '').toLowerCase();
+        const snippet = String(article.snippet || '').toLowerCase();
+        return title.includes(needle) || snippet.includes(needle);
+      };
 
       if (uniqueTokens.length > 0) {
         results = deduplicatedArticles
@@ -867,12 +924,10 @@ class SearchService {
           .filter((item) => item.score > 0)
           .sort((a, b) => b.score - a.score || (b.article.publishedAtMs || 0) - (a.article.publishedAtMs || 0))
           .map((item) => item.article);
-      } else {
-        results = deduplicatedArticles.filter(
-          (a) =>
-            String(a.title || '').toLowerCase().includes(normQuery) ||
-            String(a.snippet || '').toLowerCase().includes(normQuery)
-        );
+      }
+
+      if (results.length === 0) {
+        results = deduplicatedArticles.filter((article) => needles.some((needle) => matchesQuery(article, needle)));
       }
     }
 
@@ -896,9 +951,15 @@ class SearchService {
       sourcesUsed: sources,
     };
 
+    const emptyDueToTranslate =
+      Boolean(normQuery) &&
+      finalResults.length === 0 &&
+      deduplicatedArticles.length > 0 &&
+      queryTranslateFailed;
+
     if (finalResults.length > 0) {
       this.searchCache.set(cacheKey, payload, CONFIG.CACHE.SEARCH_TTL);
-    } else if (!upstreamFailed) {
+    } else if (!upstreamFailed && !emptyDueToTranslate) {
       this.searchCache.set(cacheKey, payload, CONFIG.CACHE.SEARCH_EMPTY_TTL);
     }
 
@@ -972,52 +1033,12 @@ async function startBackgroundJobs() {
     .finally(() => scheduleNext());
 }
 
-async function enrichWithTranslations(results, shouldTranslate) {
-  if (!shouldTranslate) {
-    return results.map((item) => ({
-      ...item,
-      title_ru: translationService.getCached(item.title, 'ru') || null,
-      snippet_ru: translationService.getCached(item.snippet, 'ru') || null,
-    }));
-  }
-
-  const maxInline = CONFIG.SEARCH.MAX_TRANSLATED_RESULTS;
-  const budget = CONFIG.SEARCH.TRANSLATE_BUDGET_MS;
-  const started = Date.now();
-
-  return Promise.all(
-    results.map(async (item, idx) => {
-      let titleRu = translationService.getCached(item.title, 'ru') || null;
-      let snippetRu = translationService.getCached(item.snippet, 'ru') || null;
-
-      const remaining = budget - (Date.now() - started);
-      const canFetch = idx < maxInline && remaining > 200;
-
-      if (canFetch && !titleRu && item.title) {
-        titleRu = await withTimeout(
-          translationService.translate(item.title, 'ru'),
-          Math.min(2500, remaining),
-          null
-        );
-      }
-      if (canFetch && !snippetRu && item.snippet) {
-        const rem = budget - (Date.now() - started);
-        if (rem > 200) {
-          snippetRu = await withTimeout(
-            translationService.translate(item.snippet, 'ru'),
-            Math.min(2500, rem),
-            null
-          );
-        }
-      }
-
-      return {
-        ...item,
-        title_ru: titleRu || null,
-        snippet_ru: snippetRu || null,
-      };
-    })
-  );
+function enrichWithTranslations(results) {
+  return results.map((item) => ({
+    ...item,
+    title_ru: translationService.getCached(item.title, 'ru') || null,
+    snippet_ru: translationService.getCached(item.snippet, 'ru') || null,
+  }));
 }
 
 const app = express();
@@ -1036,6 +1057,10 @@ app.helpers = {
   resolveSources,
   hydrateSearchCache,
   setFetchImpl,
+  transliterateCyrillic,
+  expandQueryTerms,
+  tokenize,
+  enrichWithTranslations,
   TOP_SOURCES,
   CATEGORY_SOURCES,
   SOURCES,
@@ -1046,7 +1071,7 @@ app.use(cors({
   methods: ['GET', 'POST'],
   maxAge: 86400,
 }));
-app.use(express.json({ limit: '10kb' }));
+app.use(express.json({ limit: '80kb' }));
 
 app.use((req, res, next) => {
   const requestId = req.headers['x-request-id'] || crypto.randomUUID();
@@ -1146,9 +1171,13 @@ app.get('/api/search', async (req, res) => {
       category,
     });
 
-    const enrichedResults = await enrichWithTranslations(results, shouldTranslate);
+    const enrichedResults = enrichWithTranslations(results);
 
     res.setHeader('Cache-Control', refresh === 'true' ? 'no-store' : 'private, max-age=30');
+    const translationsPending = shouldTranslate && enrichedResults.some(
+      (item) => (item.title && !item.title_ru) || (item.snippet && !item.snippet_ru)
+    );
+
     res.json({
       ok: true,
       results: enrichedResults,
@@ -1158,6 +1187,7 @@ app.get('/api/search', async (req, res) => {
       generatedAt: generatedAt || null,
       sourcesFailed: sourcesFailed || [],
       sourcesUsed: sourcesUsed || [],
+      translationsPending,
     });
   } catch (error) {
     if (error.status === 400) {
@@ -1272,7 +1302,7 @@ app.post('/api/translate/batch', async (req, res) => {
     const translations = await Promise.all(
       limitedTexts.map(async (text) => {
         if (typeof text !== 'string' || !text.trim()) {
-          return { original: text, translated: text, failed: false };
+          return { original: text, translated: null, failed: false };
         }
         if (text.length > CONFIG.TRANSLATION.MAX_BATCH_ITEM_LENGTH) {
           return { original: text, translated: null, failed: true, error: 'invalid' };
@@ -1280,12 +1310,12 @@ app.post('/api/translate/batch', async (req, res) => {
         try {
           const translated = await translationService.translate(text, targetLang);
           if (translated == null) {
-            return { original: text, translated: text, failed: true };
+            return { original: text, translated: null, failed: true };
           }
           return { original: text, translated, failed: false };
         } catch (err) {
           console.warn('[batch translate] item failed:', err.message);
-          return { original: text, translated: text, failed: true };
+          return { original: text, translated: null, failed: true };
         }
       })
     );

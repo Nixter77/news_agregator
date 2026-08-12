@@ -1117,10 +1117,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const translate = isTranslateEnabled();
     const title = translate ? sanitizeString(article.title_ru || article.title) : sanitizeString(article.title);
     const snippet = translate ? sanitizeString(article.snippet_ru || article.snippet) : sanitizeString(article.snippet);
+    const query = sanitizeString(topicInput?.value).trim();
+    const highlightRegexes = splitIntoTokens(query).map((token) => ({
+      token,
+      re: new RegExp(`(${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
+    }));
     const titleEl = card.querySelector('.news-card-title');
     const textEl = card.querySelector('.news-card-text');
-    if (titleEl) titleEl.textContent = title;
-    if (textEl) textEl.textContent = snippet;
+    if (titleEl) titleEl.innerHTML = highlightMatchesWithRegexes(title, highlightRegexes);
+    if (textEl) textEl.innerHTML = highlightMatchesWithRegexes(snippet, highlightRegexes);
 
     if (article.title_ru || article.snippet_ru) {
       const badges = card.querySelector('.news-card-badges');
@@ -1134,35 +1139,50 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  async function ensureArticlesTranslated(articles, searchToken) {
+  async function translateBatchChunk(texts) {
+    const resp = await fetch('/api/translate/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ texts, to: 'ru' })
+    });
+    if (!resp.ok) throw new Error(`batch ${resp.status}`);
+    const data = await resp.json();
+    const map = new Map();
+    if (data?.ok && Array.isArray(data.translations)) {
+      data.translations.forEach((item) => {
+        if (item?.failed || !item?.original || !item?.translated) return;
+        map.set(item.original, item.translated);
+      });
+    }
+    return map;
+  }
+
+  async function ensureArticlesTranslated(articles, searchToken = activeSearchToken) {
     if (!isTranslateEnabled() || !Array.isArray(articles) || articles.length === 0) return;
 
     const missingTexts = [];
-    articles.forEach(article => {
-      if (!article.title_ru && article.title) missingTexts.push(article.title);
-      if (!article.snippet_ru && article.snippet) missingTexts.push(article.snippet);
+    const seen = new Set();
+    articles.forEach((article) => {
+      if (article.title && !article.title_ru && !seen.has(article.title)) {
+        seen.add(article.title);
+        missingTexts.push(article.title);
+      }
+      if (article.snippet && !article.snippet_ru && !seen.has(article.snippet)) {
+        seen.add(article.snippet);
+        missingTexts.push(article.snippet);
+      }
     });
 
     if (missingTexts.length === 0) return;
 
+    const BATCH = 20;
     try {
-      const resp = await fetch('/api/translate/batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ texts: missingTexts.slice(0, 20), to: 'ru' })
-      });
-      if (!resp.ok) throw new Error(`batch ${resp.status}`);
-      const data = await resp.json();
-      if (activeSearchToken !== searchToken) return;
+      for (let offset = 0; offset < missingTexts.length; offset += BATCH) {
+        if (activeSearchToken !== searchToken || !isTranslateEnabled()) return;
+        const map = await translateBatchChunk(missingTexts.slice(offset, offset + BATCH));
+        if (activeSearchToken !== searchToken) return;
 
-      if (data?.ok && Array.isArray(data.translations)) {
-        const map = new Map();
-        data.translations.forEach(item => {
-          if (item?.failed) return;
-          if (item?.original && item?.translated) map.set(item.original, item.translated);
-        });
-
-        articles.forEach(article => {
+        articles.forEach((article) => {
           let patched = false;
           if (!article.title_ru && article.title && map.has(article.title)) {
             article.title_ru = map.get(article.title);

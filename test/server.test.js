@@ -199,6 +199,61 @@ test('search endpoint includes title_ru and snippet_ru fields', async () => {
     assert.ok('title_ru' in body.results[0]);
     assert.ok('snippet_ru' in body.results[0]);
   }
+  assert.equal(typeof body.translationsPending, 'boolean');
+});
+
+test('transliterateCyrillic maps russian words to latin tokens', () => {
+  assert.equal(app.helpers.transliterateCyrillic('технологии'), 'tehnologii');
+  assert.ok(app.helpers.tokenize(app.helpers.transliterateCyrillic('израиль')).includes('izrail'));
+  const expanded = app.helpers.expandQueryTerms('израиль', '');
+  assert.ok(expanded.uniqueTokens.includes('israel'));
+});
+
+test('search stays fast when translation never resolves', async () => {
+  const original = app.services.translationService.translate.bind(app.services.translationService);
+  app.services.translationService.translate = () => new Promise(() => {});
+  try {
+    const started = Date.now();
+    const response = await fetch(`${baseUrl}/api/search?translate=true&source=bbc&q=${encodeURIComponent('израиль')}`, {
+      headers: { connection: 'close' }
+    });
+    const elapsed = Date.now() - started;
+    assert.ok(response.status === 200 || response.status === 503);
+    assert.ok(elapsed < 2500, `search blocked on translate for ${elapsed}ms`);
+    if (response.status === 200) {
+      const body = await response.json();
+      assert.equal(typeof body.translationsPending, 'boolean');
+    }
+  } finally {
+    app.services.translationService.translate = original;
+  }
+});
+
+test('batch translate marks failures as null, not original text', async () => {
+  const original = app.services.translationService.translate.bind(app.services.translationService);
+  app.services.translationService.translate = async () => null;
+  try {
+    const response = await fetch(`${baseUrl}/api/translate/batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', connection: 'close' },
+      body: JSON.stringify({ texts: ['Hello world'], to: 'ru' })
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.translations[0].failed, true);
+    assert.equal(body.translations[0].translated, null);
+  } finally {
+    app.services.translationService.translate = original;
+  }
+});
+
+test('enrichWithTranslations is cache-only and synchronous', () => {
+  const enriched = app.helpers.enrichWithTranslations([
+    { title: 'Uncached headline', snippet: 'Uncached snippet' }
+  ]);
+  assert.equal(enriched[0].title_ru, null);
+  assert.equal(enriched[0].snippet_ru, null);
 });
 
 test('unknown api path returns json 404', async () => {
