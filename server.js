@@ -34,6 +34,10 @@ const CONFIG = {
     MAX_CONCURRENT_TRANSLATIONS: 5,
     MAX_CONCURRENT_FEEDS: 15,
     MAX_ITEMS_PER_FEED: 40,
+    MAX_BODY_BYTES: 2 * 1024 * 1024,
+    USER_AGENT: 'NewsAggregator/2.0 (RSS reader)',
+    CIRCUIT_FAILS: 3,
+    CIRCUIT_COOLDOWN_MS: 30 * 60 * 1000,
   },
   RATE_LIMIT: {
     WINDOW_MS: 60 * 1000,
@@ -58,7 +62,7 @@ const SOURCES = {
   bbc: { url: 'https://feeds.bbci.co.uk/news/rss.xml', title: 'BBC News', categories: ['world'] },
   nyt: { url: 'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml', title: 'The New York Times', categories: ['world'] },
   guardian: { url: 'https://www.theguardian.com/world/rss', title: 'The Guardian', categories: ['world'] },
-  cnn: { url: 'https://rss.cnn.com/rss/cnn_topstories.rss', title: 'CNN', categories: ['world'] },
+  cnn: { url: 'http://rss.cnn.com/rss/edition.rss', title: 'CNN', categories: ['world'] },
   aljazeera: { url: 'https://www.aljazeera.com/xml/rss/all.xml', title: 'Al Jazeera', categories: ['world'] },
   npr: { url: 'https://feeds.npr.org/1001/rss.xml', title: 'NPR', categories: ['world'] },
   techcrunch: { url: 'https://techcrunch.com/feed/', title: 'TechCrunch', categories: ['tech'] },
@@ -86,7 +90,7 @@ const SOURCES = {
   espn: { url: 'https://www.espn.com/espn/rss/news', title: 'ESPN', categories: ['sports'] },
 };
 
-const TOP_SOURCES = ['bbc', 'nyt', 'guardian', 'cnn', 'npr', 'techcrunch', 'verge', 'reuters_world', 'forbes', 'aljazeera'];
+const TOP_SOURCES = ['bbc', 'nyt', 'guardian', 'cnn', 'npr', 'techcrunch', 'verge', 'politico', 'forbes', 'aljazeera'];
 
 const CATEGORY_SOURCES = {
   tech: ['techcrunch', 'verge', 'wired', 'engadget', 'arstechnica', 'hackernews', 'bbc_tech', 'nyt_tech', 'bloomberg_tech'],
@@ -109,16 +113,24 @@ const CSP_HEADER =
  * Resolve which feed keys to query for a search.
  * category 'all' / empty must NOT force full fan-out (TOP_SOURCES path).
  */
-function resolveSources({ sourceKey, normQuery, viewAll, category }) {
+function resolveSources({ sourceKey, normQuery, viewAll, category, skipKeys } = {}) {
   if (sourceKey && SOURCES[sourceKey]) return [sourceKey];
 
   const cat = category && category !== 'all' ? category : null;
+  let keys;
   if (cat && CATEGORY_SOURCES[cat]) {
-    return CATEGORY_SOURCES[cat].filter((id) => SOURCES[id]);
+    keys = CATEGORY_SOURCES[cat].filter((id) => SOURCES[id]);
+  } else if (normQuery || viewAll) {
+    keys = Object.keys(SOURCES);
+  } else {
+    keys = TOP_SOURCES.filter((id) => SOURCES[id]);
   }
 
-  if (normQuery || viewAll) return Object.keys(SOURCES);
-  return TOP_SOURCES;
+  if (skipKeys && skipKeys.size) {
+    const filtered = keys.filter((id) => !skipKeys.has(id));
+    if (filtered.length) return filtered;
+  }
+  return keys;
 }
 
 function normalizeLink(link) {
@@ -192,22 +204,84 @@ async function withTimeout(promise, ms, fallback) {
   }
 }
 
-async function fetchWithRetry(url, { attempts = CONFIG.FETCH.RETRIES, timeoutMs = CONFIG.FETCH.TIMEOUT } = {}) {
+let fetchImpl = globalThis.fetch.bind(globalThis);
+
+function setFetchImpl(fn) {
+  fetchImpl = typeof fn === 'function' ? fn : globalThis.fetch.bind(globalThis);
+}
+
+const DEFAULT_FETCH_HEADERS = {
+  'User-Agent': CONFIG.FETCH.USER_AGENT,
+  Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8',
+};
+
+function statusFromError(error) {
+  if (Number.isInteger(error?.status)) return error.status;
+  const match = String(error?.message || '').match(/Status (\d{3})/);
+  return match ? Number(match[1]) : 0;
+}
+
+function httpError(message, status = 0) {
+  return Object.assign(new Error(message), { status });
+}
+
+function assertXmlLike(contentType, body) {
+  const ct = String(contentType || '').toLowerCase();
+  if (ct.includes('text/html') && !ct.includes('xml')) {
+    throw httpError('Non-XML response', 415);
+  }
+  const head = String(body || '').slice(0, 240).trim();
+  if (/^<!doctype html/i.test(head) || /^<html[\s>]/i.test(head)) {
+    throw httpError('Non-XML response', 415);
+  }
+}
+
+async function readLimitedText(response, maxBytes = CONFIG.FETCH.MAX_BODY_BYTES) {
+  const declared = Number(response.headers.get('content-length') || 0);
+  if (declared > maxBytes) throw httpError('Response too large', 413);
+
+  if (!response.body || typeof response.body.getReader !== 'function') {
+    const text = await response.text();
+    if (Buffer.byteLength(text, 'utf8') > maxBytes) throw httpError('Response too large', 413);
+    return text;
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > maxBytes) {
+      try { await reader.cancel(); } catch { /* ignore */ }
+      throw httpError('Response too large', 413);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf8');
+}
+
+async function fetchWithRetry(url, { attempts = CONFIG.FETCH.RETRIES, timeoutMs = CONFIG.FETCH.TIMEOUT, headers } = {}) {
   let lastError;
   for (let i = 0; i < attempts; i++) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(url, { signal: controller.signal });
+      const response = await fetchImpl(url, {
+        signal: controller.signal,
+        headers: { ...DEFAULT_FETCH_HEADERS, ...(headers || {}) },
+        redirect: 'follow',
+      });
       if (response.ok) return response;
 
       const retryable = response.status === 429 || response.status >= 500;
-      lastError = new Error(`Status ${response.status}`);
+      lastError = httpError(`Status ${response.status}`, response.status);
       if (!retryable) throw lastError;
     } catch (error) {
       lastError = error;
-      const msg = String(error?.message || '');
-      const nonRetryableHttp = /^Status (4\d\d)$/.test(msg) && !msg.includes('Status 429');
+      const status = statusFromError(error);
+      const nonRetryableHttp = status >= 400 && status < 500 && status !== 429;
       if (nonRetryableHttp) throw error;
       if (i < attempts - 1) {
         const delay = CONFIG.FETCH.RETRY_BASE_MS * 2 ** i + Math.random() * 100;
@@ -218,6 +292,43 @@ async function fetchWithRetry(url, { attempts = CONFIG.FETCH.RETRIES, timeoutMs 
     }
   }
   throw lastError;
+}
+
+class SourceHealth {
+  constructor({ failThreshold = CONFIG.FETCH.CIRCUIT_FAILS, cooldownMs = CONFIG.FETCH.CIRCUIT_COOLDOWN_MS } = {}) {
+    this.failThreshold = failThreshold;
+    this.cooldownMs = cooldownMs;
+    this.records = new Map();
+  }
+
+  recordSuccess(key) {
+    this.records.delete(key);
+  }
+
+  recordFailure(key, status = 0) {
+    const rec = this.records.get(key) || { count: 0, lastStatus: 0, openUntil: 0 };
+    rec.count += 1;
+    rec.lastStatus = status;
+    const hardFail = status === 403 || status === 404 || status === 410 || status === 415;
+    if (hardFail && rec.count >= this.failThreshold) {
+      rec.openUntil = Date.now() + this.cooldownMs;
+    }
+    this.records.set(key, rec);
+  }
+
+  isOpen(key) {
+    const rec = this.records.get(key);
+    if (!rec?.openUntil) return false;
+    if (rec.openUntil <= Date.now()) {
+      rec.openUntil = 0;
+      return false;
+    }
+    return true;
+  }
+
+  openKeys() {
+    return new Set([...this.records.keys()].filter((key) => this.isOpen(key)));
+  }
 }
 
 class LRUCache {
@@ -394,14 +505,18 @@ class TranslationService {
       return null;
     }
 
+    let resolveFn;
     const promise = new Promise((resolve) => {
-      this.queue.push({ text, targetLang, resolve, cacheKey });
-      this.processQueue();
+      resolveFn = resolve;
     }).finally(() => {
-      this.pendingTranslations.delete(cacheKey);
+      if (this.pendingTranslations.get(cacheKey) === promise) {
+        this.pendingTranslations.delete(cacheKey);
+      }
     });
 
     this.pendingTranslations.set(cacheKey, promise);
+    this.queue.push({ text, targetLang, resolve: resolveFn, cacheKey });
+    this.processQueue();
     return promise;
   }
 
@@ -459,21 +574,31 @@ class RSSService {
     this.cache = cache;
     this.pendingRequests = new Map();
     this.articleStore = new LRUCache(2000);
+    this.health = new SourceHealth();
     this.xmlParser = new xml2js.Parser({ explicitArray: false, mergeAttrs: true, trim: true });
   }
 
+  _wrapCachedArticles(articles, { stale = false } = {}) {
+    return {
+      articles: Array.isArray(articles) ? articles : [],
+      failed: false,
+      fromCache: true,
+      stale,
+    };
+  }
+
   async fetchFeed(sourceKey, url, options = {}) {
-    if (!url) return [];
+    if (!url) return { articles: [], failed: true, fromCache: false, stale: false };
     const { forceRefresh = false } = options;
 
     if (!forceRefresh) {
       const swr = this.cache.getSWR(url);
-      if (swr.status === 'fresh') return swr.value;
+      if (swr.status === 'fresh') return this._wrapCachedArticles(swr.value, { stale: false });
       if (swr.status === 'stale') {
         this._revalidateFeed(sourceKey, url, { forceRefresh: false }).catch((err) => {
           console.warn(`[SWR] revalidate failed ${sourceKey}:`, err.message);
         });
-        return swr.value;
+        return this._wrapCachedArticles(swr.value, { stale: true });
       }
     }
 
@@ -482,41 +607,59 @@ class RSSService {
 
   async _revalidateFeed(sourceKey, url, options = {}) {
     const { forceRefresh = false } = options;
+    const pending = this.pendingRequests.get(url);
 
-    if (this.pendingRequests.has(url)) {
-      const pending = this.pendingRequests.get(url);
-      if (!forceRefresh) return pending;
-      // Wait for in-flight work, then re-fetch so refresh is not a no-op
+    if (pending) {
+      if (!forceRefresh || pending.forceRefresh) return pending.promise;
       try {
-        await pending;
+        await pending.promise;
       } catch {
         /* ignore */
       }
-      if (this.pendingRequests.has(url)) {
-        return this.pendingRequests.get(url);
-      }
     }
 
-    const fetchPromise = (async () => {
-      try {
-        const response = await fetchWithRetry(url);
-        const xml = await response.text();
-        const parsed = await this.xmlParser.parseStringPromise(xml);
-        const articles = this._normalizeFeed(sourceKey, parsed);
+    let resolveFn;
+    let rejectFn;
+    const promise = new Promise((resolve, reject) => {
+      resolveFn = resolve;
+      rejectFn = reject;
+    });
+    const entry = { promise, forceRefresh };
+    this.pendingRequests.set(url, entry);
 
-        this.cache.set(url, articles, CONFIG.CACHE.RSS_TTL, CONFIG.CACHE.RSS_STALE_WINDOW);
-        return articles;
-      } catch (error) {
-        console.warn(`Error fetching feed ${sourceKey}: ${error.message}`);
-        // Preserve last-known-good (including expired stale entry via peek)
-        return this.cache.peek(url) || this.cache.get(url) || [];
-      } finally {
-        this.pendingRequests.delete(url);
-      }
-    })();
+    this._loadFeed(sourceKey, url)
+      .then(resolveFn, rejectFn)
+      .finally(() => {
+        if (this.pendingRequests.get(url) === entry) {
+          this.pendingRequests.delete(url);
+        }
+      });
 
-    this.pendingRequests.set(url, fetchPromise);
-    return fetchPromise;
+    return promise;
+  }
+
+  async _loadFeed(sourceKey, url) {
+    try {
+      const response = await fetchWithRetry(url);
+      const xml = await readLimitedText(response);
+      assertXmlLike(response.headers.get('content-type'), xml);
+      const parsed = await this.xmlParser.parseStringPromise(xml);
+      const articles = this._normalizeFeed(sourceKey, parsed);
+
+      this.cache.set(url, articles, CONFIG.CACHE.RSS_TTL, CONFIG.CACHE.RSS_STALE_WINDOW);
+      this.health.recordSuccess(sourceKey);
+      return { articles, failed: false, fromCache: false, stale: false };
+    } catch (error) {
+      console.warn(`Error fetching feed ${sourceKey}: ${error.message}`);
+      this.health.recordFailure(sourceKey, statusFromError(error));
+      const fallback = this.cache.peek(url) || [];
+      return {
+        articles: Array.isArray(fallback) ? fallback : [],
+        failed: true,
+        fromCache: Array.isArray(fallback) && fallback.length > 0,
+        stale: Array.isArray(fallback) && fallback.length > 0,
+      };
+    }
   }
 
   _normalizeFeed(sourceKey, parsedData) {
@@ -604,39 +747,84 @@ class RSSService {
   }
 }
 
+function hydrateSearchCache(cached) {
+  if (Array.isArray(cached)) {
+    return {
+      results: cached,
+      upstreamFailed: false,
+      degraded: false,
+      cached: true,
+      generatedAt: null,
+      sourcesFailed: [],
+      sourcesUsed: [],
+    };
+  }
+  return {
+    results: cached?.results || [],
+    upstreamFailed: false,
+    degraded: Boolean(cached?.degraded),
+    cached: true,
+    generatedAt: cached?.generatedAt || null,
+    sourcesFailed: Array.isArray(cached?.sourcesFailed) ? cached.sourcesFailed : [],
+    sourcesUsed: Array.isArray(cached?.sourcesUsed) ? cached.sourcesUsed : [],
+  };
+}
+
 class SearchService {
   constructor(rssService, translationService) {
     this.rssService = rssService;
     this.translationService = translationService;
     this.searchCache = new LRUCache(CONFIG.CACHE.SEARCH_LIMIT);
+    this.pendingSearches = new Map();
   }
 
   /**
-   * @returns {Promise<{ results: object[], upstreamFailed: boolean, degraded: boolean }>}
+   * @returns {Promise<{ results: object[], upstreamFailed: boolean, degraded: boolean, cached: boolean, generatedAt: string|null, sourcesFailed: string[], sourcesUsed: string[] }>}
    */
   async search(query, sourceKey, options = {}) {
     const { viewAll, refresh, category } = options;
     const normQuery = (query || '').trim().toLowerCase();
     const cat = category && category !== 'all' ? category : 'all';
-
     const cacheKey = `search:${sourceKey || 'all'}:${normQuery}:${Boolean(viewAll)}:${cat}`;
+
     if (!refresh) {
       const cached = this.searchCache.get(cacheKey);
-      if (cached) {
-        return { results: cached, upstreamFailed: false, degraded: false };
+      if (cached) return hydrateSearchCache(cached);
+      if (this.pendingSearches.has(cacheKey)) {
+        return this.pendingSearches.get(cacheKey);
+      }
+    } else if (this.pendingSearches.has(cacheKey)) {
+      try {
+        await this.pendingSearches.get(cacheKey);
+      } catch {
+        /* ignore */
       }
     }
 
+    const promise = this._searchUncached(query, sourceKey, { viewAll, refresh, category: cat, cacheKey });
+    this.pendingSearches.set(cacheKey, promise);
+    try {
+      return await promise;
+    } finally {
+      if (this.pendingSearches.get(cacheKey) === promise) {
+        this.pendingSearches.delete(cacheKey);
+      }
+    }
+  }
+
+  async _searchUncached(query, sourceKey, { viewAll, refresh, category, cacheKey }) {
+    const normQuery = (query || '').trim().toLowerCase();
     const sources = resolveSources({
       sourceKey,
       normQuery,
       viewAll,
-      category: cat,
+      category,
+      skipKeys: this.rssService.health?.openKeys(),
     });
 
-    // Do NOT delete cache before refresh — forceRefresh revalidates; last-known-good kept on failure
     const allArticles = [];
-    let feedsWithData = 0;
+    const sourcesFailed = [];
+    let originOk = 0;
     const concurrencyLimit = CONFIG.FETCH.MAX_CONCURRENT_FEEDS;
 
     for (let i = 0; i < sources.length; i += concurrencyLimit) {
@@ -646,13 +834,18 @@ class SearchService {
           this.rssService.fetchFeed(key, SOURCES[key].url, { forceRefresh: Boolean(refresh) })
         )
       );
-      for (const articles of results) {
-        if (Array.isArray(articles) && articles.length > 0) feedsWithData++;
-        allArticles.push(...(articles || []));
-      }
+      results.forEach((result, idx) => {
+        const key = chunk[idx];
+        const articles = Array.isArray(result?.articles) ? result.articles : [];
+        allArticles.push(...articles);
+        if (result?.failed) sourcesFailed.push(key);
+        else originOk += 1;
+      });
     }
 
-    const upstreamFailed = sources.length > 0 && feedsWithData === 0;
+    const generatedAt = new Date().toISOString();
+    const degraded = sourcesFailed.length > 0;
+    const upstreamFailed = sources.length > 0 && originOk === 0 && allArticles.length === 0;
 
     allArticles.sort((a, b) => (b.publishedAtMs || 0) - (a.publishedAtMs || 0));
     const deduplicatedArticles = dedupeArticles(allArticles);
@@ -675,7 +868,6 @@ class SearchService {
           .sort((a, b) => b.score - a.score || (b.article.publishedAtMs || 0) - (a.article.publishedAtMs || 0))
           .map((item) => item.article);
       } else {
-        // Short query fallback: literal substring match
         results = deduplicatedArticles.filter(
           (a) =>
             String(a.title || '').toLowerCase().includes(normQuery) ||
@@ -686,7 +878,6 @@ class SearchService {
 
     const limit = viewAll ? CONFIG.SEARCH.MAX_RESULTS_VIEW_ALL : CONFIG.SEARCH.MAX_RESULTS_DEFAULT;
     const finalResults = results.slice(0, limit).map((article) => {
-      // Strip internal dedupe keys from API payload
       const { cleanLink, normTitle, ...publicArticle } = article;
       return publicArticle;
     });
@@ -697,17 +888,24 @@ class SearchService {
       throw err;
     }
 
+    const payload = {
+      results: finalResults,
+      degraded,
+      generatedAt,
+      sourcesFailed,
+      sourcesUsed: sources,
+    };
+
     if (finalResults.length > 0) {
-      this.searchCache.set(cacheKey, finalResults, CONFIG.CACHE.SEARCH_TTL);
+      this.searchCache.set(cacheKey, payload, CONFIG.CACHE.SEARCH_TTL);
     } else if (!upstreamFailed) {
-      // Short negative cache for legitimate empty queries
-      this.searchCache.set(cacheKey, finalResults, CONFIG.CACHE.SEARCH_EMPTY_TTL);
+      this.searchCache.set(cacheKey, payload, CONFIG.CACHE.SEARCH_EMPTY_TTL);
     }
 
     return {
-      results: finalResults,
+      ...payload,
+      cached: false,
       upstreamFailed,
-      degraded: upstreamFailed || feedsWithData < sources.length,
     };
   }
 }
@@ -731,7 +929,7 @@ async function startBackgroundJobs() {
     for (let i = 0; i < keys.length; i += concurrencyLimit) {
       const chunk = keys.slice(i, i + concurrencyLimit);
       const results = await Promise.all(chunk.map((key) => rssService.fetchFeed(key, SOURCES[key].url)));
-      allArticles.push(...results.flat());
+      allArticles.push(...results.flatMap((result) => result?.articles || []));
     }
 
     allArticles.sort((a, b) => (b.publishedAtMs || 0) - (a.publishedAtMs || 0));
@@ -832,6 +1030,15 @@ app.services = {
   rssService,
   searchService,
   rateLimiter,
+  setFetchImpl,
+};
+app.helpers = {
+  resolveSources,
+  hydrateSearchCache,
+  setFetchImpl,
+  TOP_SOURCES,
+  CATEGORY_SOURCES,
+  SOURCES,
 };
 
 app.use(cors({
@@ -884,12 +1091,26 @@ app.get('/api/sources', (req, res) => {
   });
 });
 
+function requireSingleString(value, field) {
+  if (value == null || value === '') return '';
+  if (Array.isArray(value)) {
+    const error = new Error(`${field} must be a single value`);
+    error.status = 400;
+    throw error;
+  }
+  return typeof value === 'string' ? value : String(value);
+}
+
 app.get('/api/search', async (req, res) => {
   try {
-    const { q, source, view_all, refresh, category, translate } = req.query;
-    const query = typeof q === 'string' ? q.trim() : '';
-    const sourceKey = typeof source === 'string' ? source.trim() : '';
+    const query = requireSingleString(req.query.q, 'q').trim();
+    const sourceKey = requireSingleString(req.query.source, 'source').trim();
+    const categoryRaw = requireSingleString(req.query.category, 'category').trim();
+    const viewAll = requireSingleString(req.query.view_all, 'view_all');
+    const refresh = requireSingleString(req.query.refresh, 'refresh');
+    const translate = requireSingleString(req.query.translate, 'translate');
     const shouldTranslate = translate !== 'false';
+    const category = categoryRaw || 'all';
 
     if (query.length > CONFIG.SEARCH.MAX_QUERY_LENGTH) {
       return res.status(400).json({
@@ -905,10 +1126,24 @@ app.get('/api/search', async (req, res) => {
       });
     }
 
-    const { results, degraded } = await searchService.search(query, sourceKey, {
-      viewAll: view_all === 'true',
+    if (category && category !== 'all' && !CATEGORY_SOURCES[category]) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Unknown category',
+      });
+    }
+
+    const {
+      results,
+      degraded,
+      cached,
+      generatedAt,
+      sourcesFailed,
+      sourcesUsed,
+    } = await searchService.search(query, sourceKey, {
+      viewAll: viewAll === 'true',
       refresh: refresh === 'true',
-      category: typeof category === 'string' ? category.trim() : 'all',
+      category,
     });
 
     const enrichedResults = await enrichWithTranslations(results, shouldTranslate);
@@ -919,8 +1154,15 @@ app.get('/api/search', async (req, res) => {
       results: enrichedResults,
       count: enrichedResults.length,
       degraded: Boolean(degraded),
+      cached: Boolean(cached),
+      generatedAt: generatedAt || null,
+      sourcesFailed: sourcesFailed || [],
+      sourcesUsed: sourcesUsed || [],
     });
   } catch (error) {
+    if (error.status === 400) {
+      return res.status(400).json({ ok: false, error: error.message });
+    }
     if (error.code === 'UPSTREAM_DOWN') {
       console.error(`[${req.requestId}] Search upstream down`);
       return res.status(503).json({
@@ -936,13 +1178,13 @@ app.get('/api/search', async (req, res) => {
 
 app.get('/api/article', async (req, res) => {
   try {
-    const { source, id, translate } = req.query;
-    if (!source || !id) {
+    const sourceKey = requireSingleString(req.query.source, 'source').trim();
+    const articleId = requireSingleString(req.query.id, 'id').trim();
+    const translate = requireSingleString(req.query.translate, 'translate');
+
+    if (!sourceKey || !articleId) {
       return res.status(400).json({ ok: false, error: 'Source and id required' });
     }
-
-    const sourceKey = String(source);
-    const articleId = String(id);
 
     if (!SOURCES[sourceKey]) {
       return res.status(400).json({ ok: false, error: 'Unknown source' });
@@ -952,9 +1194,12 @@ app.get('/api/article', async (req, res) => {
     }
 
     const fullText = rssService.getFullText(sourceKey, articleId);
-    let fullTextRu = null;
+    if (!fullText) {
+      return res.status(404).json({ ok: false, error: 'Article not found' });
+    }
 
-    if (fullText && translate === 'true') {
+    let fullTextRu = null;
+    if (translate === 'true') {
       try {
         fullTextRu = await translationService.translate(fullText, 'ru');
       } catch (err) {
@@ -967,11 +1212,14 @@ app.get('/api/article', async (req, res) => {
       article: {
         source: sourceKey,
         id: articleId,
-        fullText: fullText || null,
+        fullText,
         fullText_ru: fullTextRu,
       },
     });
   } catch (error) {
+    if (error.status === 400) {
+      return res.status(400).json({ ok: false, error: error.message });
+    }
     console.error(`[${req.requestId}] Article API Error:`, error);
     res.status(500).json({ ok: false, error: 'Failed to fetch article details' });
   }
@@ -1047,6 +1295,13 @@ app.post('/api/translate/batch', async (req, res) => {
     console.error(`[${req.requestId}] Batch Translation API Error:`, error);
     res.status(500).json({ ok: false, error: 'Batch translation failed' });
   }
+});
+
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ ok: false, error: 'Not found' });
+  }
+  next();
 });
 
 app.get('*', (req, res) => {

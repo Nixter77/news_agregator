@@ -191,9 +191,173 @@ test('search endpoint includes title_ru and snippet_ru fields', async () => {
   }
   assert.equal(body.ok, true);
   assert.equal(Array.isArray(body.results), true);
+  assert.ok('degraded' in body);
+  assert.ok(Array.isArray(body.sourcesFailed));
+  assert.ok(Array.isArray(body.sourcesUsed));
+  assert.ok('generatedAt' in body);
   if (body.results.length > 0) {
     assert.ok('title_ru' in body.results[0]);
     assert.ok('snippet_ru' in body.results[0]);
   }
+});
+
+test('unknown api path returns json 404', async () => {
+  const response = await fetch(`${baseUrl}/api/nope`, { headers: { connection: 'close' } });
+  assert.equal(response.status, 404);
+  const body = await response.json();
+  assert.equal(body.ok, false);
+  assert.equal(body.error, 'Not found');
+});
+
+test('rejects repeated query params instead of silently defaulting', async () => {
+  const response = await fetch(`${baseUrl}/api/search?q=a&q=b`, { headers: { connection: 'close' } });
+  assert.equal(response.status, 400);
+  const body = await response.json();
+  assert.equal(body.ok, false);
+  assert.match(body.error, /single value/);
+});
+
+test('rejects unknown search category', async () => {
+  const response = await fetch(`${baseUrl}/api/search?category=TECH`, { headers: { connection: 'close' } });
+  assert.equal(response.status, 400);
+  const body = await response.json();
+  assert.equal(body.ok, false);
+  assert.equal(body.error, 'Unknown category');
+});
+
+test('article endpoint returns 404 when body is not in store', async () => {
+  const params = new URLSearchParams({ source: 'bbc', id: 'missing-article-id' });
+  const response = await fetch(`${baseUrl}/api/article?${params}`, { headers: { connection: 'close' } });
+  assert.equal(response.status, 404);
+  const body = await response.json();
+  assert.equal(body.ok, false);
+  assert.equal(body.error, 'Article not found');
+});
+
+const SAMPLE_RSS = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Example</title>
+<item>
+  <title>Hello world</title>
+  <link>https://example.com/hello</link>
+  <description>Snippet</description>
+  <pubDate>Wed, 12 Aug 2026 12:00:00 GMT</pubDate>
+  <guid>hello-1</guid>
+</item>
+</channel></rss>`;
+
+function xmlResponse(body = SAMPLE_RSS, status = 200) {
+  return new Response(body, {
+    status,
+    headers: { 'content-type': 'application/rss+xml' },
+  });
+}
+
+test('resolveSources uses top tier and honors skip keys', () => {
+  const { resolveSources, TOP_SOURCES } = app.helpers;
+  const top = resolveSources({});
+  assert.deepEqual(top, TOP_SOURCES);
+  assert.equal(top.includes('reuters_world'), false);
+  assert.deepEqual(resolveSources({ sourceKey: 'bbc', category: 'tech' }), ['bbc']);
+  assert.ok(resolveSources({ category: 'tech' }).includes('techcrunch'));
+  const skipped = resolveSources({ skipKeys: new Set(['bbc']) });
+  assert.equal(skipped.includes('bbc'), false);
+  assert.ok(skipped.length > 0);
+});
+
+test('parallel fetchFeed shares one origin GET', async () => {
+  let calls = 0;
+  app.services.setFetchImpl(async () => {
+    calls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    return xmlResponse();
+  });
+  try {
+    const url = `https://example.test/parallel-${Date.now()}.xml`;
+    const [first, second] = await Promise.all([
+      app.services.rssService.fetchFeed('bbc', url),
+      app.services.rssService.fetchFeed('bbc', url),
+    ]);
+    assert.equal(calls, 1);
+    assert.equal(first.failed, false);
+    assert.equal(second.articles.length, 1);
+    assert.equal(second.articles[0].title, 'Hello world');
+  } finally {
+    app.services.setFetchImpl(null);
+  }
+});
+
+test('forceRefresh issues a new origin GET', async () => {
+  let calls = 0;
+  app.services.setFetchImpl(async () => {
+    calls += 1;
+    return xmlResponse();
+  });
+  try {
+    const url = `https://example.test/refresh-${Date.now()}.xml`;
+    await app.services.rssService.fetchFeed('bbc', url);
+    await app.services.rssService.fetchFeed('bbc', url, { forceRefresh: true });
+    assert.equal(calls, 2);
+  } finally {
+    app.services.setFetchImpl(null);
+  }
+});
+
+test('forceRefresh does not reuse a non-force in-flight fetch', async () => {
+  let calls = 0;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  app.services.setFetchImpl(async () => {
+    const n = ++calls;
+    if (n === 1) await gate;
+    return xmlResponse();
+  });
+  try {
+    const url = `https://example.test/force-inflight-${Date.now()}.xml`;
+    const first = app.services.rssService.fetchFeed('bbc', url);
+    const second = app.services.rssService.fetchFeed('bbc', url, { forceRefresh: true });
+    release();
+    await first;
+    await second;
+    assert.equal(calls, 2);
+  } finally {
+    app.services.setFetchImpl(null);
+  }
+});
+
+test('HTML upstream is treated as a failed feed', async () => {
+  app.services.setFetchImpl(async () => new Response('<!DOCTYPE html><html><body>nope</body></html>', {
+    status: 200,
+    headers: { 'content-type': 'text/html' },
+  }));
+  try {
+    const result = await app.services.rssService.fetchFeed('bbc', `https://example.test/html-${Date.now()}`);
+    assert.equal(result.failed, true);
+    assert.equal(result.articles.length, 0);
+  } finally {
+    app.services.setFetchImpl(null);
+  }
+});
+
+test('search cache hit preserves degraded metadata', async () => {
+  const payload = {
+    results: [{ id: '1', title: 'Cached', snippet: 'x', source: 'bbc' }],
+    degraded: true,
+    generatedAt: '2026-08-12T00:00:00.000Z',
+    sourcesFailed: ['cnn'],
+    sourcesUsed: ['bbc'],
+  };
+  app.services.searchService.searchCache.set('search:all::false:all', payload, 60_000);
+
+  const result = await app.services.searchService.search('', '', {
+    viewAll: false,
+    refresh: false,
+    category: 'all',
+  });
+  assert.equal(result.cached, true);
+  assert.equal(result.degraded, true);
+  assert.deepEqual(result.sourcesFailed, ['cnn']);
+  assert.equal(result.generatedAt, '2026-08-12T00:00:00.000Z');
 });
 

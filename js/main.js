@@ -929,6 +929,31 @@ document.addEventListener('DOMContentLoaded', () => {
     return { relative, absolute: absoluteTimeFormatter.format(parsed) };
   }
 
+  function formatSearchStatus(data) {
+    const count = Array.isArray(data?.results) ? data.results.length : 0;
+    const parts = [`Показаны ${count} материалов`];
+
+    if (data?.generatedAt) {
+      const timeMeta = computeTimeMeta(data.generatedAt);
+      if (timeMeta.relative && timeMeta.relative !== 'Дата не указана') {
+        parts.push(data.cached ? `кэш · ${timeMeta.relative}` : `обновлено ${timeMeta.relative}`);
+      }
+    }
+
+    if (data?.degraded) {
+      const failed = Array.isArray(data.sourcesFailed) ? data.sourcesFailed : [];
+      if (failed.length) {
+        const labels = failed.slice(0, 4).map((id) => getSourceLabel(id) || id);
+        const extra = failed.length > 4 ? ` и ещё ${failed.length - 4}` : '';
+        parts.push(`недоступны: ${labels.join(', ')}${extra}`);
+      } else {
+        parts.push('часть источников недоступна');
+      }
+    }
+
+    return `${parts.join('. ')}.`;
+  }
+
   function setLoading(isLoading) {
     if (!loadingIndicator) return;
     loadingIndicator.classList.toggle('d-none', !isLoading);
@@ -1277,8 +1302,12 @@ document.addEventListener('DOMContentLoaded', () => {
         recordSearchQuery(query);
       }
       renderArticles(data.results, { query, source }, searchToken);
-      if (data.degraded && searchFeedback) {
-        searchFeedback.textContent = `${searchFeedback.textContent} (часть источников недоступна)`;
+      if (searchFeedback) {
+        if (data.results.length > 0) {
+          searchFeedback.textContent = formatSearchStatus(data);
+        } else if (data.degraded) {
+          searchFeedback.textContent = `${searchFeedback.textContent} ${formatSearchStatus(data)}`;
+        }
       }
     } catch (error) {
       if (error.name === 'AbortError') return;
