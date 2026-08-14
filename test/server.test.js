@@ -1,6 +1,8 @@
 const { after, before, test } = require('node:test');
 const assert = require('node:assert/strict');
 
+process.env.NODE_ENV = process.env.NODE_ENV || 'test';
+
 const app = require('../server');
 
 let server;
@@ -22,6 +24,8 @@ after(async () => {
     if (app.services.translationCache?.destroy) app.services.translationCache.destroy();
     if (app.services.searchService?.searchCache?.destroy) app.services.searchService.searchCache.destroy();
     if (app.services.rateLimiter?.destroy) app.services.rateLimiter.destroy();
+    if (app.services.refreshLimiter?.destroy) app.services.refreshLimiter.destroy();
+    if (app.services.translateLimiter?.destroy) app.services.translateLimiter.destroy();
     if (app.services.rssService?.articleStore?.destroy) app.services.rssService.articleStore.destroy();
   }
   if (server) {
@@ -333,6 +337,7 @@ test('resolveSources uses top tier and honors skip keys', () => {
   assert.ok(resolveSources({ category: 'tech' }).includes('techcrunch'));
   assert.equal(resolveSources({ category: 'tech', viewAll: true, allSources: true }).includes('espn'), false);
   assert.deepEqual(resolveSources({ normQuery: 'israel' }).sort(), allKeys.slice().sort());
+  assert.deepEqual(resolveSources({ normQuery: 'a' }), TOP_SOURCES);
   const skipped = resolveSources({ skipKeys: new Set(['bbc']) });
   assert.equal(skipped.includes('bbc'), false);
   assert.ok(skipped.length > 0);
@@ -482,6 +487,26 @@ test('layered cache hydrates L1 from shared L2', async () => {
   }
 });
 
+test('layered cache rejects tampered L2 envelopes', async () => {
+  const { LayeredCache, LRUCache, MemorySharedStore } = app.helpers;
+  const l2 = new MemorySharedStore();
+  const writer = new LayeredCache(new LRUCache(10), l2, { prefix: 't2' });
+  await writer.set('k', ['hello'], 60_000, 20_000);
+  writer.destroy();
+
+  const storedKey = [...l2.map.keys()][0];
+  const env = l2.map.get(storedKey);
+  env.value = ['pwned'];
+
+  const reader = new LayeredCache(new LRUCache(10), l2, { prefix: 't2' });
+  try {
+    const swr = await reader.getSWRAsync('k');
+    assert.equal(swr.status, 'miss');
+  } finally {
+    reader.destroy();
+  }
+});
+
 test('search deadline returns whatever finished as degraded', async () => {
   const prevDeadline = app.config.SEARCH.DEADLINE_MS;
   app.config.SEARCH.DEADLINE_MS = 80;
@@ -570,6 +595,24 @@ test('health reports shared store backend', async () => {
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.store.l2, 'none');
+  assert.equal(typeof body.metrics.rateLimited, 'number');
+});
+
+test('health omits recon details in production', async () => {
+  const prev = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  try {
+    const response = await fetch(`${baseUrl}/health`, { headers: { connection: 'close' } });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.status, 'ok');
+    assert.equal(body.cache, undefined);
+    assert.equal(body.store, undefined);
+    assert.equal(body.metrics, undefined);
+  } finally {
+    if (prev == null) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prev;
+  }
 });
 
 const SAMPLE_ATOM = `<?xml version="1.0" encoding="UTF-8"?>
@@ -648,5 +691,159 @@ test('empty RSS description does not become a sentinel snippet', async () => {
 test('translate service refuses placeholder strings', async () => {
   const result = await app.services.translationService.translate('(No Description)', 'ru');
   assert.equal(result, null);
+});
+
+test('all configured feed URLs are https', () => {
+  for (const [id, source] of Object.entries(app.helpers.SOURCES)) {
+    assert.match(source.url, /^https:\/\//, `${id} must use https`);
+  }
+});
+
+test('translation cache keys are hashed, not raw text', () => {
+  const key = app.helpers.translationCacheKey('ru', 'Hello world from the news desk');
+  assert.match(key, /^ru\|[a-f0-9]{40}$/);
+  assert.equal(key.includes('Hello'), false);
+});
+
+test('public refresh does not force origin re-fetch', async () => {
+  let calls = 0;
+  app.services.setFetchImpl(async () => {
+    calls += 1;
+    return xmlResponse();
+  });
+  try {
+    app.services.rssCache.clear();
+    app.services.searchService.searchCache.clear();
+    const first = await fetch(`${baseUrl}/api/search?translate=false`, { headers: { connection: 'close' } });
+    assert.equal(first.status, 200);
+    const afterWarm = calls;
+    assert.ok(afterWarm > 0);
+    const second = await fetch(`${baseUrl}/api/search?translate=false&refresh=true`, {
+      headers: { connection: 'close' },
+    });
+    assert.equal(second.status, 200);
+    assert.equal(calls, afterWarm);
+    const body = await second.json();
+    assert.ok(body.results.every((item) => !Object.prototype.hasOwnProperty.call(item, 'fullText')));
+  } finally {
+    app.services.setFetchImpl(null);
+  }
+});
+
+test('article body hydrates from cached feed fullText', async () => {
+  app.services.setFetchImpl(async () => xmlResponse());
+  try {
+    await app.services.rssService.fetchFeed('bbc', app.helpers.SOURCES.bbc.url, { forceRefresh: true });
+    app.services.rssService.articleStore.clear();
+    const text = await app.services.rssService.getFullTextAsync('bbc', 'hello-1');
+    assert.equal(text, 'Snippet');
+  } finally {
+    app.services.setFetchImpl(null);
+  }
+});
+
+test('repeated 5xx opens the source circuit', async () => {
+  app.services.setFetchImpl(async () => new Response('nope', { status: 503 }));
+  try {
+    const url = `https://example.test/flaky-${Date.now()}.xml`;
+    for (let i = 0; i < 6; i += 1) {
+      await app.services.rssService.fetchFeed('bbc', url, { forceRefresh: true });
+    }
+    assert.equal(app.services.rssService.health.isOpen('bbc'), true);
+  } finally {
+    app.services.setFetchImpl(null);
+    app.services.rssService.health.records.delete('bbc');
+  }
+});
+
+test('XML entities are rejected as a failed feed', async () => {
+  const xml = `<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe "bar">]><rss version="2.0"><channel><item><title>&xxe;</title><link>https://example.com/x</link></item></channel></rss>`;
+  app.services.setFetchImpl(async () => new Response(xml, {
+    status: 200,
+    headers: { 'content-type': 'application/rss+xml' },
+  }));
+  try {
+    const result = await app.services.rssService.fetchFeed('bbc', `https://example.test/xxe-${Date.now()}`);
+    assert.equal(result.failed, true);
+    assert.equal(result.articles.length, 0);
+  } finally {
+    app.services.setFetchImpl(null);
+  }
+});
+
+test('translate rejects cross-origin browser requests', async () => {
+  const response = await fetch(`${baseUrl}/api/translate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      origin: 'https://evil.example',
+      connection: 'close',
+    },
+    body: JSON.stringify({ text: 'Hello world' }),
+  });
+  assert.equal(response.status, 403);
+  const body = await response.json();
+  assert.equal(body.ok, false);
+});
+
+test('cron fails closed without secret outside test env', async () => {
+  const prevEnv = process.env.NODE_ENV;
+  const prevSecret = process.env.CRON_SECRET;
+  process.env.NODE_ENV = 'production';
+  delete process.env.CRON_SECRET;
+  try {
+    const response = await fetch(`${baseUrl}/api/cron/warmup`, { headers: { connection: 'close' } });
+    assert.equal(response.status, 401);
+  } finally {
+    if (prevEnv == null) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prevEnv;
+    if (prevSecret == null) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = prevSecret;
+  }
+});
+
+test('private fetch destinations are blocked', () => {
+  assert.equal(app.helpers.isPrivateOrLocalHost('127.0.0.1'), true);
+  assert.equal(app.helpers.isPrivateOrLocalHost('10.0.0.8'), true);
+  assert.equal(app.helpers.isPrivateOrLocalHost('169.254.169.254'), true);
+  assert.equal(app.helpers.isPrivateOrLocalHost('::1'), true);
+  assert.equal(app.helpers.isPrivateOrLocalHost('fe80::1'), true);
+  assert.equal(app.helpers.isPrivateOrLocalHost('::ffff:127.0.0.1'), true);
+  assert.equal(app.helpers.isPrivateOrLocalHost('feeds.bbci.co.uk'), false);
+  assert.throws(() => app.helpers.assertSafeDestination('http://127.0.0.1/rss.xml'));
+});
+
+test('redirects to private hosts are not followed', async () => {
+  app.services.setFetchImpl(async (url) => {
+    if (String(url).includes('127.0.0.1')) {
+      throw new Error('should not follow private redirect');
+    }
+    return new Response('', {
+      status: 302,
+      headers: { location: 'http://127.0.0.1/secret.xml' },
+    });
+  });
+  try {
+    const result = await app.services.rssService.fetchFeed('bbc', `https://example.test/open-${Date.now()}.xml`);
+    assert.equal(result.failed, true);
+  } finally {
+    app.services.setFetchImpl(null);
+  }
+});
+
+test('translate requires origin outside test env', async () => {
+  const prev = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  try {
+    const response = await fetch(`${baseUrl}/api/translate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', connection: 'close' },
+      body: JSON.stringify({ text: 'Hello world' }),
+    });
+    assert.equal(response.status, 403);
+  } finally {
+    if (prev == null) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prev;
+  }
 });
 

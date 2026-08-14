@@ -16,7 +16,7 @@ dotenv.config();
 
 const CONFIG = {
   PORT: process.env.PORT || 3000,
-  ALLOWED_ORIGIN: process.env.ALLOWED_ORIGIN || '*',
+  ALLOWED_ORIGIN: process.env.ALLOWED_ORIGIN || '',
   CACHE: {
     RSS_TTL: 5 * 60 * 1000,
     RSS_STALE_WINDOW: 20 * 60 * 1000,
@@ -36,6 +36,7 @@ const CONFIG = {
     MAX_CONCURRENT_FEEDS: 15,
     MAX_ITEMS_PER_FEED: 40,
     MAX_BODY_BYTES: 2 * 1024 * 1024,
+    MAX_REDIRECTS: 5,
     USER_AGENT: 'NewsAggregator/2.0 (RSS reader)',
     CIRCUIT_FAILS: 3,
     CIRCUIT_COOLDOWN_MS: 30 * 60 * 1000,
@@ -43,6 +44,8 @@ const CONFIG = {
   RATE_LIMIT: {
     WINDOW_MS: 60 * 1000,
     MAX_REQUESTS: 60,
+    REFRESH_MAX: 6,
+    TRANSLATE_MAX: 20,
   },
   SEARCH: {
     MAX_QUERY_LENGTH: 500,
@@ -65,7 +68,7 @@ const SOURCES = {
   bbc: { url: 'https://feeds.bbci.co.uk/news/rss.xml', title: 'BBC News', categories: ['world'] },
   nyt: { url: 'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml', title: 'The New York Times', categories: ['world'] },
   guardian: { url: 'https://www.theguardian.com/world/rss', title: 'The Guardian', categories: ['world'] },
-  cnn: { url: 'http://rss.cnn.com/rss/edition.rss', title: 'CNN', categories: ['world'] },
+  cnn: { url: 'https://rss.cnn.com/rss/edition.rss', title: 'CNN', categories: ['world'] },
   aljazeera: { url: 'https://www.aljazeera.com/xml/rss/all.xml', title: 'Al Jazeera', categories: ['world'] },
   npr: { url: 'https://feeds.npr.org/1001/rss.xml', title: 'NPR', categories: ['world'] },
   techcrunch: { url: 'https://techcrunch.com/feed/', title: 'TechCrunch', categories: ['tech'] },
@@ -106,11 +109,14 @@ const CATEGORY_SOURCES = {
 
 const CSP_HEADER =
   "default-src 'self'; " +
-  "script-src 'self' https://cdn.jsdelivr.net; " +
-  "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; " +
+  "script-src 'self'; " +
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
   "font-src 'self' https://fonts.gstatic.com; " +
   "img-src 'self' data: https:; " +
-  "connect-src 'self';";
+  "connect-src 'self'; " +
+  "base-uri 'self'; " +
+  "form-action 'self'; " +
+  "frame-ancestors 'self';";
 
 /**
  * Resolve which feed keys to query for a search.
@@ -128,7 +134,7 @@ function resolveSources({ sourceKey, normQuery, viewAll, allSources, category, s
   let keys;
   if (cat && CATEGORY_SOURCES[cat]) {
     keys = CATEGORY_SOURCES[cat].filter((id) => SOURCES[id]);
-  } else if (allSources || normQuery) {
+  } else if (allSources || (normQuery && String(normQuery).trim().length >= 2)) {
     keys = Object.keys(SOURCES);
   } else {
     keys = TOP_SOURCES.filter((id) => SOURCES[id]);
@@ -279,10 +285,158 @@ function assertXmlLike(contentType, body) {
   if (ct.includes('text/html') && !ct.includes('xml')) {
     throw httpError('Non-XML response', 415);
   }
-  const head = String(body || '').slice(0, 240).trim();
+  const raw = String(body || '');
+  const head = raw.slice(0, 240).trim();
   if (/^<!doctype html/i.test(head) || /^<html[\s>]/i.test(head)) {
     throw httpError('Non-XML response', 415);
   }
+  if (/<!ENTITY/i.test(raw.slice(0, 8000))) {
+    throw httpError('XML entities not allowed', 415);
+  }
+}
+
+function isPrivateOrLocalHost(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/\.$/, '');
+  if (!host) return true;
+  const bare = host.replace(/^\[|\]$/g, '');
+  if (bare === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) {
+    return true;
+  }
+  if (
+    bare === 'metadata.google.internal' ||
+    bare === '127.0.0.1' ||
+    bare === '0.0.0.0' ||
+    bare === '::1' ||
+    bare === '0:0:0:0:0:0:0:1' ||
+    bare === '::'
+  ) {
+    return true;
+  }
+  if (bare === '169.254.169.254' || bare.startsWith('169.254.')) return true;
+  if (bare.includes(':')) {
+    if (bare.startsWith('fe80:') || bare.startsWith('fc') || bare.startsWith('fd')) return true;
+    const mapped = bare.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i);
+    if (mapped) return isPrivateOrLocalHost(mapped[1]);
+  }
+  const ipv4 = bare.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const a = Number(ipv4[1]);
+    const b = Number(ipv4[2]);
+    if (a === 10 || a === 127 || a === 0 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)) return true;
+  }
+  return false;
+}
+
+function assertSafeDestination(finalUrl) {
+  let dest;
+  try {
+    dest = new URL(finalUrl);
+  } catch {
+    throw httpError('Invalid fetch destination', 403);
+  }
+  if (dest.protocol !== 'http:' && dest.protocol !== 'https:') {
+    throw httpError('Invalid fetch destination', 403);
+  }
+  if (isPrivateOrLocalHost(dest.hostname)) {
+    throw httpError('Blocked fetch destination', 403);
+  }
+}
+
+function translationCacheKey(targetLang, text) {
+  const hash = crypto.createHash('sha1').update(String(text)).digest('hex');
+  return `${String(targetLang || 'ru').toLowerCase()}|${hash}`;
+}
+
+function safeEqual(a, b) {
+  const left = Buffer.from(String(a), 'utf8');
+  const right = Buffer.from(String(b), 'utf8');
+  if (left.length !== right.length) {
+    crypto.timingSafeEqual(left, left);
+    return false;
+  }
+  return crypto.timingSafeEqual(left, right);
+}
+
+function resolveCacheMacSecret() {
+  return process.env.CACHE_HMAC_SECRET || process.env.CRON_SECRET || '';
+}
+
+let ephemeralCacheMacSecret = '';
+function cacheMacSecret() {
+  const fromEnv = resolveCacheMacSecret();
+  if (fromEnv) return fromEnv;
+  if (!ephemeralCacheMacSecret) {
+    ephemeralCacheMacSecret = crypto.randomBytes(32).toString('hex');
+  }
+  return ephemeralCacheMacSecret;
+}
+
+function envelopeMac(prefix, key, envelope) {
+  const payload = JSON.stringify({
+    v: envelope.v,
+    expires: envelope.expires,
+    staleUntil: envelope.staleUntil,
+    value: envelope.value,
+  });
+  return crypto
+    .createHmac('sha256', cacheMacSecret())
+    .update(String(prefix))
+    .update('\n')
+    .update(String(key))
+    .update('\n')
+    .update(payload)
+    .digest('hex');
+}
+
+function signCacheEnvelope(prefix, key, envelope) {
+  return { ...envelope, mac: envelopeMac(prefix, key, envelope) };
+}
+
+function isSignedCacheEnvelope(prefix, key, envelope) {
+  if (!envelope || envelope.v !== 1 || typeof envelope.mac !== 'string') return false;
+  return safeEqual(envelope.mac, envelopeMac(prefix, key, envelope));
+}
+
+const metrics = {
+  rateLimited: 0,
+  upstreamFail: 0,
+  translateFail: 0,
+};
+
+function recordMetric(name) {
+  if (Object.prototype.hasOwnProperty.call(metrics, name)) {
+    metrics[name] += 1;
+  }
+}
+
+function hostFromAbsoluteUrl(value) {
+  try {
+    return value ? new URL(value).host : '';
+  } catch {
+    return '';
+  }
+}
+
+function isTrustedBrowserOrigin(req) {
+  const origin = String(req.headers.origin || '');
+  const referer = String(req.headers.referer || '');
+  const allowed = CONFIG.ALLOWED_ORIGIN;
+  const host = String(req.headers.host || '');
+
+  if (allowed && allowed !== '*' && allowed !== 'same-origin') {
+    if (origin) return origin === allowed;
+    const allowedHost = hostFromAbsoluteUrl(allowed);
+    if (referer && allowedHost) return hostFromAbsoluteUrl(referer) === allowedHost;
+    return process.env.NODE_ENV === 'test';
+  }
+
+  if (origin) {
+    return hostFromAbsoluteUrl(origin) === host;
+  }
+  if (referer) {
+    return hostFromAbsoluteUrl(referer) === host;
+  }
+  return process.env.NODE_ENV === 'test';
 }
 
 async function readLimitedText(response, maxBytes = CONFIG.FETCH.MAX_BODY_BYTES) {
@@ -311,16 +465,52 @@ async function readLimitedText(response, maxBytes = CONFIG.FETCH.MAX_BODY_BYTES)
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf8');
 }
 
-async function fetchWithRetry(url, { attempts = CONFIG.FETCH.RETRIES, timeoutMs = CONFIG.FETCH.TIMEOUT, headers } = {}) {
+async function fetchFollowingRedirects(url, { signal, headers, method, body } = {}) {
+  let current = String(url);
+  assertSafeDestination(current);
+  const maxHops = CONFIG.FETCH.MAX_REDIRECTS || 5;
+  const verb = String(method || 'GET').toUpperCase();
+  const followBody = verb === 'GET' || verb === 'HEAD';
+
+  for (let hop = 0; hop < maxHops; hop += 1) {
+    const response = await fetchImpl(current, {
+      signal,
+      headers,
+      method: verb,
+      body: hop === 0 ? body : undefined,
+      redirect: 'manual',
+    });
+    if (response.status >= 300 && response.status < 400) {
+      if (!followBody) throw httpError(`Status ${response.status}`, response.status);
+      const loc = response.headers.get('location');
+      if (!loc) throw httpError(`Status ${response.status}`, response.status);
+      let next;
+      try {
+        next = new URL(loc, current).href;
+      } catch {
+        throw httpError('Invalid redirect', 403);
+      }
+      assertSafeDestination(next);
+      current = next;
+      continue;
+    }
+    if (response.url) assertSafeDestination(response.url);
+    return response;
+  }
+  throw httpError('Too many redirects', 403);
+}
+
+async function fetchWithRetry(url, { attempts = CONFIG.FETCH.RETRIES, timeoutMs = CONFIG.FETCH.TIMEOUT, headers, method, body } = {}) {
   let lastError;
   for (let i = 0; i < attempts; i++) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetchImpl(url, {
+      const response = await fetchFollowingRedirects(url, {
         signal: controller.signal,
         headers: { ...DEFAULT_FETCH_HEADERS, ...(headers || {}) },
-        redirect: 'follow',
+        method,
+        body,
       });
       if (response.ok) return response;
 
@@ -359,7 +549,9 @@ class SourceHealth {
     rec.count += 1;
     rec.lastStatus = status;
     const hardFail = status === 403 || status === 404 || status === 410 || status === 415;
-    if (hardFail && rec.count >= this.failThreshold) {
+    const flaky = status === 0 || status === 429 || status >= 500;
+    if ((hardFail && rec.count >= this.failThreshold) ||
+        (flaky && rec.count >= this.failThreshold + 2)) {
       rec.openUntil = Date.now() + this.cooldownMs;
     }
     this.records.set(key, rec);
@@ -621,7 +813,10 @@ class LayeredCache {
   }
 
   _hydrate(key, envelope) {
-    if (!envelope || envelope.v !== 1 || !Object.prototype.hasOwnProperty.call(envelope, 'value')) {
+    if (!isSignedCacheEnvelope(this.prefix, key, envelope)) {
+      return false;
+    }
+    if (!Object.prototype.hasOwnProperty.call(envelope, 'value')) {
       return false;
     }
     const now = Date.now();
@@ -662,12 +857,12 @@ class LayeredCache {
     if (!item || !this.l2) return Promise.resolve();
     const until = item.staleUntil || item.expires;
     const ttlSeconds = until > Date.now() ? Math.ceil((until - Date.now()) / 1000) : 1;
-    return this._writeL2(key, {
+    return this._writeL2(key, signCacheEnvelope(this.prefix, key, {
       v: 1,
       value,
       expires: item.expires,
       staleUntil: item.staleUntil,
-    }, ttlSeconds);
+    }), ttlSeconds);
   }
 
   delete(key) {
@@ -746,12 +941,12 @@ function mapPoolWithDeadline(items, mapper, { concurrency, deadlineAt } = {}) {
 
 function authorizeCron(req) {
   const secret = process.env.CRON_SECRET || '';
+  if (!secret) {
+    return process.env.NODE_ENV === 'test';
+  }
   const auth = String(req.headers.authorization || '');
   const header = String(req.headers['x-cron-secret'] || '');
-  if (secret) {
-    return auth === `Bearer ${secret}` || header === secret;
-  }
-  return !process.env.VERCEL;
+  return safeEqual(auth, `Bearer ${secret}`) || safeEqual(header, secret);
 }
 
 class RateLimiter {
@@ -775,22 +970,27 @@ class RateLimiter {
     clearInterval(this._pruneInterval);
   }
 
+  consume(ip = 'unknown') {
+    const record = this.hits.get(ip) || { count: 0, windowStart: Date.now() };
+    if (Date.now() - record.windowStart > this.windowMs) {
+      record.count = 1;
+      record.windowStart = Date.now();
+    } else {
+      record.count += 1;
+    }
+    this.hits.set(ip, record);
+    return {
+      limited: record.count > this.max,
+      retryAfterSec: Math.ceil(this.windowMs / 1000),
+    };
+  }
+
   middleware() {
     return (req, res, next) => {
-      const ip = req.ip || 'unknown';
-      const record = this.hits.get(ip) || { count: 0, windowStart: Date.now() };
-
-      if (Date.now() - record.windowStart > this.windowMs) {
-        record.count = 1;
-        record.windowStart = Date.now();
-      } else {
-        record.count++;
-      }
-
-      this.hits.set(ip, record);
-
-      if (record.count > this.max) {
-        res.setHeader('Retry-After', String(Math.ceil(this.windowMs / 1000)));
+      const { limited, retryAfterSec } = this.consume(req.ip || 'unknown');
+      if (limited) {
+        recordMetric('rateLimited');
+        res.setHeader('Retry-After', String(retryAfterSec));
         return res.status(429).json({
           ok: false,
           error: 'Too many requests. Please try again later.',
@@ -819,14 +1019,14 @@ class TranslationService {
    */
   async translate(text, targetLang = 'ru') {
     if (!isTranslatableText(text)) return null;
-    const cacheKey = `${targetLang}|${text}`;
+    const cacheKey = translationCacheKey(targetLang, text);
 
     const cached = this.cache.get(cacheKey);
-    if (cached) return cached;
+    if (cached != null) return cached;
 
     if (typeof this.cache.getAsync === 'function') {
       const remote = await this.cache.getAsync(cacheKey);
-      if (remote) return remote;
+      if (remote != null) return remote;
     }
 
     if (this.pendingTranslations.has(cacheKey)) {
@@ -835,6 +1035,7 @@ class TranslationService {
 
     if (this.queue.length >= this.queueLimit) {
       console.warn('[translation] queue full, dropping request');
+      recordMetric('translateFail');
       return null;
     }
 
@@ -855,7 +1056,7 @@ class TranslationService {
 
   getCached(text, targetLang = 'ru') {
     if (!isTranslatableText(text)) return null;
-    return this.cache.get(`${targetLang}|${text}`);
+    return this.cache.get(translationCacheKey(targetLang, text));
   }
 
   async processQueue() {
@@ -866,10 +1067,11 @@ class TranslationService {
 
     try {
       const result = await this._performTranslation(task.text, task.targetLang);
-      this.cache.set(task.cacheKey, result, CONFIG.CACHE.TRANSLATION_TTL);
-      task.resolve(result);
+      if (result) this.cache.set(task.cacheKey, result, CONFIG.CACHE.TRANSLATION_TTL);
+      task.resolve(result || null);
     } catch (error) {
       console.warn('[translation] failed:', error.message);
+      recordMetric('translateFail');
       task.resolve(null);
     } finally {
       this.activeWorkers--;
@@ -878,6 +1080,27 @@ class TranslationService {
   }
 
   async _performTranslation(text, targetLang) {
+    const apiKey = process.env.GOOGLE_TRANSLATE_API_KEY || '';
+    if (apiKey) {
+      const response = await fetchWithRetry(
+        `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(apiKey)}`,
+        {
+          attempts: 2,
+          timeoutMs: CONFIG.FETCH.TIMEOUT,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({ q: text, target: targetLang, format: 'text' }),
+        }
+      );
+      const data = await response.json();
+      const translated = data?.data?.translations?.[0]?.translatedText;
+      if (typeof translated !== 'string' || !translated) throw new Error('Invalid format');
+      return translated;
+    }
+
     const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t&q=${encodeURIComponent(text)}`;
     const response = await fetchWithRetry(url, { attempts: 2, timeoutMs: CONFIG.FETCH.TIMEOUT });
     const data = await response.json();
@@ -977,12 +1200,29 @@ class RSSService {
     this.pendingRequests = new Map();
     this.articleStore = new LRUCache(2000);
     this.health = new SourceHealth();
-    this.xmlParser = new xml2js.Parser({ explicitArray: false, mergeAttrs: true, trim: true });
+    this.xmlParser = new xml2js.Parser({
+      explicitArray: false,
+      mergeAttrs: true,
+      trim: true,
+      strict: true,
+      xmlns: false,
+    });
+  }
+
+  _hydrateArticleStore(articles) {
+    if (!Array.isArray(articles)) return;
+    for (const article of articles) {
+      if (article?.id && article.source && article.fullText) {
+        this.articleStore.set(`${article.source}:${article.id}`, article.fullText);
+      }
+    }
   }
 
   _wrapCachedArticles(articles, { stale = false } = {}) {
+    const list = Array.isArray(articles) ? articles : [];
+    this._hydrateArticleStore(list);
     return {
-      articles: Array.isArray(articles) ? articles : [],
+      articles: list,
       failed: false,
       fromCache: true,
       stale,
@@ -1055,6 +1295,7 @@ class RSSService {
 
     try {
       const response = await fetchWithRetry(url);
+      if (response.url) assertSafeDestination(response.url);
       const xml = await readLimitedText(response);
       assertXmlLike(response.headers.get('content-type'), xml);
       const parsed = await this.xmlParser.parseStringPromise(xml);
@@ -1065,6 +1306,7 @@ class RSSService {
       return { articles, failed: false, fromCache: false, stale: false };
     } catch (error) {
       console.warn(`Error fetching feed ${sourceKey}: ${error.message}`);
+      recordMetric('upstreamFail');
       this.health.recordFailure(sourceKey, statusFromError(error));
       const fallback = (
         typeof this.cache.peekAsync === 'function'
@@ -1156,9 +1398,10 @@ class RSSService {
 
     const id = getText(item.guid) || getText(item.id) || link || `${sourceKey}-${publishedAtMs}-${index}`;
 
-    const fullText = collapseWs(stripHtml(rawHtml)).substring(0, 4000);
+    const rawFullText = collapseWs(stripHtml(rawHtml)).substring(0, 4000);
+    const fullText = !isJunkSnippet(rawFullText) && rawFullText.length > 3 ? rawFullText : '';
     const articleKey = `${sourceKey}:${id}`;
-    this.articleStore.set(articleKey, !isJunkSnippet(fullText) && fullText.length > 3 ? fullText : snippet);
+    if (fullText) this.articleStore.set(articleKey, fullText);
 
     return {
       id,
@@ -1172,11 +1415,30 @@ class RSSService {
       publishedAtMs,
       cleanLink: normalizeLink(link),
       normTitle: normalizeTitle(title),
+      fullText,
     };
   }
 
   getFullText(sourceKey, id) {
     return this.articleStore.get(`${sourceKey}:${id}`) || null;
+  }
+
+  async getFullTextAsync(sourceKey, id) {
+    const key = `${sourceKey}:${id}`;
+    const local = this.articleStore.get(key);
+    if (local) return local;
+
+    const source = SOURCES[sourceKey];
+    if (!source?.url) return null;
+    const bundle = typeof this.cache.getAsync === 'function'
+      ? await this.cache.getAsync(source.url)
+      : this.cache.get(source.url);
+    const hit = Array.isArray(bundle) && bundle.find((article) => String(article?.id) === String(id));
+    if (hit?.fullText) {
+      this.articleStore.set(key, hit.fullText);
+      return hit.fullText;
+    }
+    return null;
   }
 }
 
@@ -1206,10 +1468,10 @@ function hydrateSearchCache(cached) {
 }
 
 class SearchService {
-  constructor(rssService, translationService) {
+  constructor(rssService, translationService, searchCache) {
     this.rssService = rssService;
     this.translationService = translationService;
-    this.searchCache = new LRUCache(CONFIG.CACHE.SEARCH_LIMIT);
+    this.searchCache = searchCache || new LRUCache(CONFIG.CACHE.SEARCH_LIMIT);
     this.pendingSearches = new Map();
   }
 
@@ -1225,6 +1487,10 @@ class SearchService {
     if (!refresh) {
       const cached = this.searchCache.get(cacheKey);
       if (cached) return hydrateSearchCache(cached);
+      if (typeof this.searchCache.getAsync === 'function') {
+        const remote = await this.searchCache.getAsync(cacheKey);
+        if (remote) return hydrateSearchCache(remote);
+      }
       if (this.pendingSearches.has(cacheKey)) {
         return this.pendingSearches.get(cacheKey);
       }
@@ -1272,7 +1538,7 @@ class SearchService {
 
     const { results: feedSlots, deadlineHit } = await mapPoolWithDeadline(
       sources,
-      (key) => this.rssService.fetchFeed(key, SOURCES[key].url, { forceRefresh: Boolean(refresh) }),
+      (key) => this.rssService.fetchFeed(key, SOURCES[key].url, { forceRefresh: false }),
       { concurrency: CONFIG.FETCH.MAX_CONCURRENT_FEEDS, deadlineAt }
     );
 
@@ -1338,7 +1604,7 @@ class SearchService {
 
     const limit = viewAll ? CONFIG.SEARCH.MAX_RESULTS_VIEW_ALL : CONFIG.SEARCH.MAX_RESULTS_DEFAULT;
     const finalResults = results.slice(0, limit).map((article) => {
-      const { cleanLink, normTitle, ...publicArticle } = article;
+      const { cleanLink, normTitle, fullText, ...publicArticle } = article;
       return publicArticle;
     });
 
@@ -1364,7 +1630,9 @@ class SearchService {
       queryTranslateFailed;
 
     if (deadlineHit) {
-      /* partial fan-out — do not cache as a complete answer */
+      if (finalResults.length > 0) {
+        this.searchCache.set(cacheKey, payload, CONFIG.CACHE.SEARCH_EMPTY_TTL);
+      }
     } else if (finalResults.length > 0) {
       this.searchCache.set(cacheKey, payload, CONFIG.CACHE.SEARCH_TTL);
     } else if (!upstreamFailed && !emptyDueToTranslate) {
@@ -1385,8 +1653,11 @@ const translationCache = new LayeredCache(new LRUCache(CONFIG.CACHE.TRANSLATION_
 
 const translationService = new TranslationService(translationCache);
 const rssService = new RSSService(rssCache);
-const searchService = new SearchService(rssService, translationService);
+const searchCache = new LayeredCache(new LRUCache(CONFIG.CACHE.SEARCH_LIMIT), sharedStore, { prefix: 'sch' });
+const searchService = new SearchService(rssService, translationService, searchCache);
 const rateLimiter = new RateLimiter(CONFIG.RATE_LIMIT.WINDOW_MS, CONFIG.RATE_LIMIT.MAX_REQUESTS);
+const refreshLimiter = new RateLimiter(CONFIG.RATE_LIMIT.WINDOW_MS, CONFIG.RATE_LIMIT.REFRESH_MAX);
+const translateLimiter = new RateLimiter(CONFIG.RATE_LIMIT.WINDOW_MS, CONFIG.RATE_LIMIT.TRANSLATE_MAX);
 
 async function warmupTopSources() {
   const keys = TOP_SOURCES.filter((id) => SOURCES[id]);
@@ -1414,7 +1685,7 @@ async function startBackgroundJobs() {
   const fetchAndCacheAll = async () => {
     console.log('[Background Job] Starting RSS pre-fetch and pre-translation...');
     const start = Date.now();
-    const keys = Object.keys(SOURCES);
+    const keys = TOP_SOURCES.filter((id) => SOURCES[id]);
     const concurrencyLimit = CONFIG.FETCH.MAX_CONCURRENT_FEEDS;
     const allArticles = [];
 
@@ -1473,7 +1744,11 @@ function enrichWithTranslations(results) {
 }
 
 const app = express();
-app.set('trust proxy', 1);
+const trustProxyRaw = String(process.env.TRUST_PROXY || '1').toLowerCase();
+app.set(
+  'trust proxy',
+  trustProxyRaw === '0' || trustProxyRaw === 'false' ? false : (Number(trustProxyRaw) || 1)
+);
 app.config = CONFIG;
 app.services = {
   rssCache,
@@ -1482,6 +1757,8 @@ app.services = {
   rssService,
   searchService,
   rateLimiter,
+  refreshLimiter,
+  translateLimiter,
   setFetchImpl,
   sharedStore,
   warmupTopSources,
@@ -1509,10 +1786,24 @@ app.helpers = {
   mapPoolWithDeadline,
   authorizeCron,
   createSharedStore,
+  translationCacheKey,
+  safeEqual,
+  isTrustedBrowserOrigin,
+  isPrivateOrLocalHost,
+  assertSafeDestination,
+  hostFromAbsoluteUrl,
+  signCacheEnvelope,
+  isSignedCacheEnvelope,
+  metrics,
 };
 
 app.use(cors({
-  origin: CONFIG.ALLOWED_ORIGIN,
+  origin(origin, cb) {
+    const allowed = CONFIG.ALLOWED_ORIGIN;
+    if (!allowed || allowed === 'same-origin') return cb(null, false);
+    if (allowed === '*') return cb(null, '*');
+    return cb(null, origin === allowed);
+  },
   methods: ['GET', 'POST'],
   maxAge: 86400,
 }));
@@ -1526,31 +1817,39 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Content-Security-Policy', CSP_HEADER);
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+  if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
+    res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+  }
   next();
 });
 
-app.use('/api/', (req, res, next) => {
-  if (req.path.startsWith('/cron')) return next();
-  return rateLimiter.middleware()(req, res, next);
-});
+app.use('/api/', rateLimiter.middleware());
 
-const staticOptions = { maxAge: '1h', fallthrough: true };
+const staticOptions = { maxAge: '7d', fallthrough: true };
 app.use('/css', express.static(path.join(__dirname, 'css'), staticOptions));
 app.use('/js', express.static(path.join(__dirname, 'js'), staticOptions));
 
 app.get('/health', (req, res) => {
-  res.json({
+  res.setHeader('Cache-Control', 'no-store');
+  const payload = {
     status: 'ok',
     uptime: process.uptime(),
-    cache: {
+  };
+  if (process.env.NODE_ENV !== 'production') {
+    payload.cache = {
       rss: rssCache.size,
       translation: translationCache.size,
       search: searchService.searchCache.size,
-    },
-    store: {
+    };
+    payload.store = {
       l2: sharedStore?.name || 'none',
-    },
-  });
+    };
+    payload.metrics = { ...metrics };
+  }
+  res.json(payload);
 });
 
 app.get('/api/cron/warmup', async (req, res) => {
@@ -1630,6 +1929,18 @@ app.get('/api/search', async (req, res) => {
       });
     }
 
+    if (refresh === 'true') {
+      const { limited, retryAfterSec } = refreshLimiter.consume(req.ip || 'unknown');
+      if (limited) {
+        recordMetric('rateLimited');
+        res.setHeader('Retry-After', String(retryAfterSec));
+        return res.status(429).json({
+          ok: false,
+          error: 'Too many refresh requests. Please try again later.',
+        });
+      }
+    }
+
     const {
       results,
       degraded,
@@ -1698,7 +2009,7 @@ app.get('/api/article', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'Invalid id' });
     }
 
-    const fullText = rssService.getFullText(sourceKey, articleId);
+    const fullText = await rssService.getFullTextAsync(sourceKey, articleId);
     if (!fullText) {
       return res.status(404).json({ ok: false, error: 'Article not found' });
     }
@@ -1732,8 +2043,24 @@ app.get('/api/article', async (req, res) => {
 
 const ALLOWED_TARGET_LANGS = new Set(['ru', 'en', 'de', 'fr', 'es', 'zh', 'ar', 'pt', 'it', 'ja', 'ko']);
 
+function rejectUntrustedTranslate(req, res) {
+  if (!isTrustedBrowserOrigin(req)) {
+    res.status(403).json({ ok: false, error: 'Origin not allowed' });
+    return true;
+  }
+  const { limited, retryAfterSec } = translateLimiter.consume(req.ip || 'unknown');
+  if (limited) {
+    recordMetric('rateLimited');
+    res.setHeader('Retry-After', String(retryAfterSec));
+    res.status(429).json({ ok: false, error: 'Too many translation requests. Please try again later.' });
+    return true;
+  }
+  return false;
+}
+
 app.post('/api/translate', async (req, res) => {
   try {
+    if (rejectUntrustedTranslate(req, res)) return;
     const { text, to } = req.body || {};
     if (typeof text !== 'string' || !text.trim()) {
       return res.status(400).json({ ok: false, error: 'Text required' });
@@ -1765,6 +2092,7 @@ app.post('/api/translate', async (req, res) => {
 
 app.post('/api/translate/batch', async (req, res) => {
   try {
+    if (rejectUntrustedTranslate(req, res)) return;
     const { texts, to } = req.body || {};
     if (!Array.isArray(texts) || texts.length === 0) {
       return res.status(400).json({ ok: false, error: 'Array of texts required' });
@@ -1839,6 +2167,8 @@ function shutdown(server, signal) {
       translationCache.destroy();
       searchService.searchCache.destroy();
       rateLimiter.destroy();
+      refreshLimiter.destroy();
+      translateLimiter.destroy();
       rssService.articleStore.destroy();
     } catch (e) {
       console.error('[shutdown] cleanup error:', e.message);

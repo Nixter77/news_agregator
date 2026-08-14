@@ -278,7 +278,8 @@ document.addEventListener('DOMContentLoaded', () => {
   function safeExternalUrl(candidate, fallback = '') {
     const value = sanitizeString(candidate).trim();
     if (!value || value === '#') return fallback;
-    if (value.startsWith('javascript:') || value.startsWith('data:')) return fallback;
+    const scheme = value.slice(0, 16).toLowerCase();
+    if (scheme.startsWith('javascript:') || scheme.startsWith('data:') || scheme.startsWith('vbscript:')) return fallback;
 
     try {
       const normalized = value.startsWith('//') ? `https:${value}` : value;
@@ -1448,7 +1449,7 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
         <footer class="news-card-meta">
           <span class="news-meta-source">${safeSourceTitle}</span>
-          <span title="${timeMeta.absolute}">${timeMeta.relative}</span>
+          <span title="${escapeHtml(timeMeta.absolute)}">${escapeHtml(timeMeta.relative)}</span>
         </footer>
       </article>
     `;
@@ -1546,15 +1547,17 @@ document.addEventListener('DOMContentLoaded', () => {
     return null;
   }
 
-  // Input Debounce set to 450ms
+  // Skip 1-character queries; debounce the rest so each keystroke is not a fan-out.
   const throttledFetch = (() => {
     let timeoutId = null;
     return () => {
       updateSaveSearchButtonState();
+      const q = sanitizeString(topicInput?.value).trim();
+      if (q.length === 1) return;
       if (timeoutId) clearTimeout(timeoutId);
       timeoutId = window.setTimeout(() => {
         fetchAndDisplayNews();
-      }, 450);
+      }, 650);
     };
   })();
 
