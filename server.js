@@ -222,7 +222,9 @@ app.use(cors({
 app.use(express.json({ limit: '80kb' }));
 
 app.use((req, res, next) => {
-  const requestId = req.headers['x-request-id'] || crypto.randomUUID();
+  const incomingId = String(req.headers['x-request-id'] || '');
+  // Only echo well-formed ids; anything else (header/log injection, huge values) gets a fresh UUID.
+  const requestId = /^[\w-]{1,64}$/.test(incomingId) ? incomingId : crypto.randomUUID();
   req.requestId = requestId;
   res.setHeader('X-Request-Id', requestId);
   res.setHeader('X-Content-Type-Options', 'nosniff');

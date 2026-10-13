@@ -870,3 +870,13 @@ test('health hides metrics without the ops secret even outside production', asyn
     process.env.NODE_ENV = savedEnv;
   }
 });
+
+test('X-Request-Id is echoed only when well-formed', async () => {
+  const get = (id) => fetch(`${baseUrl}/health`, { headers: { connection: 'close', 'x-request-id': id } });
+  assert.equal((await get('abc-123_XYZ')).headers.get('x-request-id'), 'abc-123_XYZ');
+  for (const bad of ['a'.repeat(65), 'evil id', '<script>', 'x;y']) {
+    const got = (await get(bad)).headers.get('x-request-id');
+    assert.notEqual(got, bad);
+    assert.match(got, /^[0-9a-f-]{36}$/);
+  }
+});
