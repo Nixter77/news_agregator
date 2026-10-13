@@ -582,12 +582,12 @@ test('cron warmup rejects a bad secret', async () => {
   }
 });
 
-test('vercel.json schedules warmup every five minutes', () => {
+test('vercel.json schedules warmup once a day', () => {
   const vercel = require('../vercel.json');
   assert.ok(Array.isArray(vercel.crons));
   const warmup = vercel.crons.find((job) => job.path === '/api/cron/warmup');
   assert.ok(warmup);
-  assert.equal(warmup.schedule, '*/5 * * * *');
+  assert.equal(warmup.schedule, '0 5 * * *');
 });
 
 test('health reports shared store backend', async () => {

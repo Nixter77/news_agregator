@@ -47,7 +47,7 @@
   "crons": [
     {
       "path": "/api/cron/warmup",
-      "schedule": "*/5 * * * *"
+      "schedule": "0 5 * * *"
     }
   ]
 }
