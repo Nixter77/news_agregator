@@ -39,7 +39,7 @@ const {
 } = require('./lib/cache');
 const { metrics, recordMetric } = require('./lib/metrics');
 const { safeEqual } = require('./lib/secret');
-const { RateLimiter, authorizeCron } = require('./lib/rate-limit');
+const { RateLimiter, authorizeCron, clientKey } = require('./lib/rate-limit');
 const { TranslationService, translationCacheKey } = require('./lib/translate');
 const { RSSService } = require('./lib/rss');
 const { SearchService, resolveSources, hydrateSearchCache } = require('./lib/search');
@@ -62,9 +62,10 @@ const translationService = new TranslationService(translationCache);
 const rssService = new RSSService(rssCache);
 const searchCache = new LayeredCache(new LRUCache(CONFIG.CACHE.SEARCH_LIMIT), sharedStore, { prefix: 'sch' });
 const searchService = new SearchService(rssService, translationService, searchCache);
-const rateLimiter = new RateLimiter(CONFIG.RATE_LIMIT.WINDOW_MS, CONFIG.RATE_LIMIT.MAX_REQUESTS);
-const refreshLimiter = new RateLimiter(CONFIG.RATE_LIMIT.WINDOW_MS, CONFIG.RATE_LIMIT.REFRESH_MAX);
-const translateLimiter = new RateLimiter(CONFIG.RATE_LIMIT.WINDOW_MS, CONFIG.RATE_LIMIT.TRANSLATE_MAX);
+const RL = CONFIG.RATE_LIMIT;
+const rateLimiter = new RateLimiter(RL.WINDOW_MS, RL.MAX_REQUESTS, { longWindowMs: RL.LONG_WINDOW_MS, longMax: RL.LONG_MAX_REQUESTS, maxKeys: RL.MAX_KEYS });
+const refreshLimiter = new RateLimiter(RL.WINDOW_MS, RL.REFRESH_MAX, { longWindowMs: RL.LONG_WINDOW_MS, longMax: RL.LONG_REFRESH_MAX, maxKeys: RL.MAX_KEYS });
+const translateLimiter = new RateLimiter(RL.WINDOW_MS, RL.TRANSLATE_MAX, { longWindowMs: RL.LONG_WINDOW_MS, longMax: RL.LONG_TRANSLATE_MAX, maxKeys: RL.MAX_KEYS });
 
 async function loadTopFeeds(deadlineMs) {
   const keys = TOP_SOURCES.filter((id) => SOURCES[id]);
@@ -347,7 +348,7 @@ app.get('/api/search', async (req, res) => {
     }
 
     if (flagOn(refresh)) {
-      const { limited, retryAfterSec } = refreshLimiter.consume(req.ip || 'unknown');
+      const { limited, retryAfterSec } = refreshLimiter.consume(clientKey(req));
       if (limited) {
         recordMetric('rateLimited');
         res.setHeader('Retry-After', String(retryAfterSec));
@@ -463,7 +464,7 @@ function rejectUntrustedTranslate(req, res) {
     res.status(403).json({ ok: false, error: 'Origin not allowed' });
     return true;
   }
-  const { limited, retryAfterSec } = translateLimiter.consume(req.ip || 'unknown');
+  const { limited, retryAfterSec } = translateLimiter.consume(clientKey(req));
   if (limited) {
     recordMetric('rateLimited');
     res.setHeader('Retry-After', String(retryAfterSec));
