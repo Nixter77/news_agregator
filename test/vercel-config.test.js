@@ -48,3 +48,11 @@ test('.gitignore excludes local archives and agent settings', () => {
     assert.ok(lines.includes(entry), entry);
   }
 });
+
+test('local archives, agent settings and logs are not tracked', () => {
+  const { execFileSync } = require('node:child_process');
+  const tracked = execFileSync('git', ['ls-files'], { cwd: root, encoding: 'utf8' }).split('\n');
+  assert.ok(fs.readFileSync(path.join(root, '.gitignore'), 'utf8').split(/\r?\n/).includes('*.log'));
+  const bad = tracked.filter((f) => /^(ForExemple|archive)\//.test(f) || f === '.claude/settings.local.json' || f.endsWith('.log'));
+  assert.deepEqual(bad, []);
+});
