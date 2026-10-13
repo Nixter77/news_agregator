@@ -56,3 +56,9 @@ test('local archives, agent settings and logs are not tracked', () => {
   const bad = tracked.filter((f) => /^(ForExemple|archive)\//.test(f) || f === '.claude/settings.local.json' || f.endsWith('.log'));
   assert.deepEqual(bad, []);
 });
+
+test('dev script uses node --watch instead of nodemon', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  assert.match(pkg.scripts.dev, /^node --watch /);
+  assert.equal((pkg.devDependencies || {}).nodemon, undefined);
+});
