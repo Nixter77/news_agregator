@@ -23,6 +23,7 @@ const {
 const {
   setFetchImpl,
   isTrustedBrowserOrigin,
+  allowedOriginList,
   isPrivateOrLocalHost,
   assertSafeDestination,
   hostFromAbsoluteUrl,
@@ -212,7 +213,7 @@ app.use(cors({
     const allowed = CONFIG.ALLOWED_ORIGIN;
     if (!allowed || allowed === 'same-origin') return cb(null, false);
     if (allowed === '*') return cb(null, '*');
-    return cb(null, origin === allowed);
+    return cb(null, allowedOriginList().includes(String(origin || '').replace(/\/$/, '')));
   },
   methods: ['GET', 'POST'],
   maxAge: 86400,
