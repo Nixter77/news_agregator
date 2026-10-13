@@ -147,3 +147,27 @@ test('free translate response shape is validated strictly', async () => {
   assert.equal(await svc.translate('Hello shape'), 'Привет');
   assert.equal(urls.length, 2, 'malformed answer falls through to the next client');
 });
+
+test('text already in the target language is returned but never cached', async () => {
+  setFetchImpl(async () => jsonResponse([[['Привет мир', 'Привет мир']], null, 'ru']));
+  const cache = memCache();
+  const svc = new TranslationService(cache);
+  assert.equal(await svc.translate('Привет мир', 'ru'), 'Привет мир');
+  assert.equal(cache.map.size, 0);
+});
+
+test('echoed source text is not cached as a translation', async () => {
+  setFetchImpl(async () => jsonResponse([[['Hello echo', 'Hello echo']], null, 'en']));
+  const cache = memCache();
+  const svc = new TranslationService(cache);
+  assert.equal(await svc.translate('Hello echo', 'ru'), 'Hello echo');
+  assert.equal(cache.map.size, 0);
+});
+
+test('real translations are cached', async () => {
+  setFetchImpl(async () => jsonResponse([[['Привет кэш', 'Hello cache']], null, 'en']));
+  const cache = memCache();
+  const svc = new TranslationService(cache);
+  assert.equal(await svc.translate('Hello cache', 'ru'), 'Привет кэш');
+  assert.equal(cache.map.size, 1);
+});
