@@ -24,27 +24,40 @@ function withEnv(vars, fn) {
   }
 }
 
-test('prod domain same-origin request is trusted with ALLOWED_ORIGIN empty', () => {
-  withEnv({ ALLOWED_ORIGIN: '' }, () => {
+const onVercel = { VERCEL: '1', VERCEL_PROJECT_PRODUCTION_URL: PROD, VERCEL_URL: 'news-agregator-abc123-nixter77s-projects.vercel.app', VERCEL_BRANCH_URL: undefined, ALLOWED_ORIGIN: '' };
+
+test('on Vercel the production domain is trusted', () => {
+  withEnv(onVercel, () => {
     assert.equal(isTrustedBrowserOrigin(req({ host: PROD, origin: `https://${PROD}` })), true);
     assert.equal(isTrustedBrowserOrigin(req({ host: PROD, referer: `https://${PROD}/?q=x` })), true);
   });
 });
 
-test('prod domain stays trusted even if ALLOWED_ORIGIN names another domain', () => {
-  withEnv({ ALLOWED_ORIGIN: 'https://other.example.com' }, () => {
-    assert.equal(isTrustedBrowserOrigin(req({ host: PROD, origin: `https://${PROD}` })), true);
-    assert.equal(isTrustedBrowserOrigin(req({ host: PROD, origin: 'https://other.example.com' })), true);
-    assert.equal(isTrustedBrowserOrigin(req({ host: PROD, origin: 'https://evil.example' })), false);
+test('on Vercel forged Host / X-Forwarded-Host cannot make an origin trusted', () => {
+  withEnv(onVercel, () => {
+    assert.equal(isTrustedBrowserOrigin(req({ host: 'evil.com', origin: 'https://evil.com' })), false);
+    assert.equal(isTrustedBrowserOrigin(req({ host: PROD, 'x-forwarded-host': 'evil.com', origin: 'https://evil.com' })), false);
+    assert.equal(isTrustedBrowserOrigin(req({ host: 'evil.com', 'x-forwarded-host': 'evil.com', referer: 'https://evil.com/' })), false);
+    assert.equal(isTrustedBrowserOrigin(req({ host: PROD, origin: 'null' })), false);
   });
 });
 
-test('Vercel production URL and comma-separated ALLOWED_ORIGIN are trusted', () => {
-  withEnv({ ALLOWED_ORIGIN: 'https://a.example, https://b.example/', VERCEL_PROJECT_PRODUCTION_URL: PROD }, () => {
-    const host = 'news-agregator-git-main-nixter77s-projects.vercel.app';
-    assert.equal(isTrustedBrowserOrigin(req({ host, origin: `https://${PROD}` })), true);
-    assert.equal(isTrustedBrowserOrigin(req({ host, origin: 'https://b.example' })), true);
-    assert.equal(isTrustedBrowserOrigin(req({ host, origin: 'null' })), false);
-    assert.equal(isTrustedBrowserOrigin(req({ host, origin: 'https://evil.example' })), false);
+test('ALLOWED_ORIGIN list is honoured on Vercel', () => {
+  withEnv({ ...onVercel, ALLOWED_ORIGIN: 'https://a.example, https://b.example/' }, () => {
+    assert.equal(isTrustedBrowserOrigin(req({ host: PROD, origin: 'https://b.example' })), true);
+    assert.equal(isTrustedBrowserOrigin(req({ host: PROD, origin: 'https://c.example' })), false);
+  });
+});
+
+test('local runs (no VERCEL env) trust the same Host only', () => {
+  withEnv({ VERCEL: undefined, VERCEL_PROJECT_PRODUCTION_URL: undefined, VERCEL_URL: undefined, VERCEL_BRANCH_URL: undefined, ALLOWED_ORIGIN: '' }, () => {
+    assert.equal(isTrustedBrowserOrigin(req({ host: 'localhost:3000', origin: 'http://localhost:3000' })), true);
+    assert.equal(isTrustedBrowserOrigin(req({ host: 'localhost:3000', 'x-forwarded-host': 'evil.com', origin: 'https://evil.com' })), false);
+  });
+});
+
+test('public prod domain is trusted even if Vercel reports another production alias', () => {
+  withEnv({ ...onVercel, VERCEL_PROJECT_PRODUCTION_URL: 'news-agregator-nixter77s-projects.vercel.app' }, () => {
+    assert.equal(isTrustedBrowserOrigin(req({ host: PROD, origin: `https://${PROD}` })), true);
   });
 });
