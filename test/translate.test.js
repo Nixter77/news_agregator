@@ -20,7 +20,10 @@ function jsonResponse(data, init = {}) {
   });
 }
 
-afterEach(() => setFetchImpl(null));
+afterEach(() => {
+  setFetchImpl(null);
+  require('../lib/translate').rateLimitedUntil.clear();
+});
 
 test('translation body read is bounded in size', async () => {
   const urls = [];
@@ -90,4 +93,39 @@ test('long texts are translated chunk by chunk with short URLs', async () => {
   assert.ok(urls.length >= Math.ceil(text.length / CHUNK_MAX_CHARS));
   assert.equal(out, 'Часть. '.repeat(urls.length));
   for (const u of urls) assert.ok(u.length < 6000, `url too long: ${u.length}`);
+});
+
+test('429 pauses the client for Retry-After and falls through to the next one', async () => {
+  const { rateLimitedUntil, parseRetryAfterMs } = require('../lib/translate');
+  const urls = [];
+  setFetchImpl(async (url) => {
+    urls.push(String(url));
+    if (String(url).includes('client=dict-chrome-ex')) {
+      return new Response('slow down', { status: 429, headers: { 'retry-after': '120' } });
+    }
+    return jsonResponse([[['Привет', 'Hello', null, null]], null, 'en']);
+  });
+  const svc = new TranslationService(memCache());
+  assert.equal(await svc.translate('Hello there'), 'Привет');
+  assert.equal(urls.filter((u) => u.includes('dict-chrome-ex')).length, 1, 'no retry storm on 429');
+  const until = rateLimitedUntil.get('dict-chrome-ex');
+  assert.ok(until - Date.now() > 100 * 1000 && until - Date.now() <= 120 * 1000);
+
+  urls.length = 0;
+  assert.equal(await svc.translate('Hello again'), 'Привет');
+  assert.ok(urls.every((u) => u.includes('client=gtx')), 'paused client is skipped');
+
+  assert.equal(parseRetryAfterMs(undefined), 60 * 1000);
+  assert.equal(parseRetryAfterMs('999999'), 15 * 60 * 1000);
+});
+
+test('when every client is rate limited translation fails fast without fetching', async () => {
+  const { rateLimitedUntil } = require('../lib/translate');
+  rateLimitedUntil.set('dict-chrome-ex', Date.now() + 60000);
+  rateLimitedUntil.set('gtx', Date.now() + 60000);
+  let calls = 0;
+  setFetchImpl(async () => { calls += 1; return jsonResponse([]); });
+  const svc = new TranslationService(memCache());
+  assert.equal(await svc.translate('Hello paused'), null);
+  assert.equal(calls, 0);
 });
