@@ -17,3 +17,11 @@ test('vercel crons run at most once a day (Hobby plan limit)', () => {
     assert.equal(dow, '*');
   }
 });
+
+test('server function has a bounded maxDuration and pinned Node major', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  assert.equal(pkg.engines.node, '22.x');
+  const serverBuild = vercel.builds.find((b) => b.src === 'server.js');
+  assert.ok(serverBuild, 'server.js build entry');
+  assert.equal(serverBuild.config.maxDuration, 30);
+});
