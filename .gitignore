@@ -16,3 +16,8 @@ node_modules/
 ForExemple/INFO_Agent/.rss_cache/
 ForExemple/INFO_Agent/output/
 ForExemple/INFO_Agent/*.db
+
+# local/archival material, not part of the app
+ForExemple/
+archive/
+.claude/settings.local.json

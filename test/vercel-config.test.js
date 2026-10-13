@@ -41,3 +41,10 @@ test('security overrides pin patched transitive versions', () => {
   assert.ok(gte(ver('body-parser'), '1.20.8'), `body-parser ${ver('body-parser')}`);
   assert.equal(ver('express').split('.')[0], '4', 'no major upgrade');
 });
+
+test('.gitignore excludes local archives and agent settings', () => {
+  const lines = fs.readFileSync(path.join(root, '.gitignore'), 'utf8').split(/\r?\n/);
+  for (const entry of ['ForExemple/', 'archive/', '.claude/settings.local.json', '.env']) {
+    assert.ok(lines.includes(entry), entry);
+  }
+});
