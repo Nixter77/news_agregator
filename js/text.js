@@ -81,12 +81,29 @@ export function highlightRegexes(query) {
 }
 
 export function highlightHtml(text, regexes) {
-  const safeText = escapeHtml(text);
-  if (!safeText || !regexes?.length) return safeText;
-  return regexes.reduce((acc, { re }) => {
-    re.lastIndex = 0;
-    return acc.replace(re, '<mark class="news-highlight">$1</mark>');
-  }, safeText);
+  // Match on the raw text and escape each piece afterwards, so a token such
+  // as "amp" can never land inside an entity like &amp; and break it.
+  const raw = sanitizeString(text);
+  if (!raw || !regexes?.length) return escapeHtml(raw);
+  const marks = new Array(raw.length).fill(false);
+  for (const { re } of regexes) {
+    const global = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
+    let m;
+    while ((m = global.exec(raw)) !== null) {
+      if (m[0] === '') { global.lastIndex += 1; continue; }
+      for (let i = m.index; i < m.index + m[0].length; i += 1) marks[i] = true;
+    }
+  }
+  let out = '';
+  let i = 0;
+  while (i < raw.length) {
+    let j = i;
+    while (j < raw.length && marks[j] === marks[i]) j += 1;
+    const piece = escapeHtml(raw.slice(i, j));
+    out += marks[i] ? `<mark class="news-highlight">${piece}</mark>` : piece;
+    i = j;
+  }
+  return out;
 }
 
 export function displayFields(article, translate) {
