@@ -248,7 +248,9 @@ app.get('/health', (req, res) => {
     status: 'ok',
     uptime: process.uptime(),
   };
-  if (process.env.NODE_ENV !== 'production') {
+  // Internal counters are recon material: only show them to the cron/ops
+  // secret holder, never by default (Vercel does not set NODE_ENV for us).
+  if (authorizeCron(req)) {
     payload.cache = {
       rss: rssCache.size,
       translation: translationCache.size,

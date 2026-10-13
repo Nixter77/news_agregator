@@ -847,3 +847,26 @@ test('translate requires origin outside test env', async () => {
   }
 });
 
+
+test('health hides metrics without the ops secret even outside production', async () => {
+  const savedSecret = process.env.CRON_SECRET;
+  const savedEnv = process.env.NODE_ENV;
+  process.env.CRON_SECRET = 'health-test-secret';
+  process.env.NODE_ENV = 'development';
+  try {
+    const anon = await (await fetch(`${baseUrl}/health`, { headers: { connection: 'close' } })).json();
+    assert.equal(anon.status, 'ok');
+    assert.equal(anon.metrics, undefined);
+    assert.equal(anon.cache, undefined);
+    assert.equal(anon.store, undefined);
+
+    const authed = await (await fetch(`${baseUrl}/health`, {
+      headers: { connection: 'close', authorization: 'Bearer health-test-secret' },
+    })).json();
+    assert.equal(typeof authed.metrics, 'object');
+    assert.equal(typeof authed.cache.rss, 'number');
+  } finally {
+    if (savedSecret === undefined) delete process.env.CRON_SECRET; else process.env.CRON_SECRET = savedSecret;
+    process.env.NODE_ENV = savedEnv;
+  }
+});
