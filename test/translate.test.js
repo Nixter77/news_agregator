@@ -129,3 +129,21 @@ test('when every client is rate limited translation fails fast without fetching'
   assert.equal(await svc.translate('Hello paused'), null);
   assert.equal(calls, 0);
 });
+
+test('free translate response shape is validated strictly', async () => {
+  const { parseFreeResponse } = require('../lib/translate');
+  assert.equal(parseFreeResponse([[['Привет ', 'Hello '], ['мир', 'world']], null, 'en']), 'Привет мир');
+  for (const bad of [{}, [], [[]], [['oops']], [[[42, 'Hello']]], [[[{ a: 1 }, 'x']]], 'str']) {
+    assert.throws(() => parseFreeResponse(bad), /Invalid format/, JSON.stringify(bad));
+  }
+
+  const urls = [];
+  setFetchImpl(async (url) => {
+    urls.push(String(url));
+    if (String(url).includes('dict-chrome-ex')) return jsonResponse([[[{ x: 1 }, 'Hello']]]);
+    return jsonResponse([[['Привет', 'Hello']], null, 'en']);
+  });
+  const svc = new TranslationService(memCache());
+  assert.equal(await svc.translate('Hello shape'), 'Привет');
+  assert.equal(urls.length, 2, 'malformed answer falls through to the next client');
+});
