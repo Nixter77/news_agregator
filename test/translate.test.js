@@ -65,3 +65,29 @@ test('dict-chrome-ex is tried before gtx', async () => {
   assert.equal(await svc.translate('Hello world'), 'Привет мир');
   assert.match(urls[0], /client=dict-chrome-ex/);
 });
+
+test('long texts are split into sentence chunks that rebuild the input', () => {
+  const { splitIntoChunks, CHUNK_MAX_CHARS } = require('../lib/translate');
+  const sentence = 'This is a reasonably long sentence about the news of the day. ';
+  const text = sentence.repeat(80) + 'x'.repeat(CHUNK_MAX_CHARS + 100);
+  const chunks = splitIntoChunks(text);
+  assert.ok(chunks.length > 2);
+  assert.equal(chunks.join(''), text);
+  for (const c of chunks) assert.ok(c.length <= CHUNK_MAX_CHARS, `chunk too long: ${c.length}`);
+  assert.deepEqual(splitIntoChunks('short'), ['short']);
+});
+
+test('long texts are translated chunk by chunk with short URLs', async () => {
+  const { CHUNK_MAX_CHARS } = require('../lib/translate');
+  const urls = [];
+  setFetchImpl(async (url) => {
+    urls.push(String(url));
+    return jsonResponse([[['Часть. ', 'Part. ', null, null]], null, 'en']);
+  });
+  const svc = new TranslationService(memCache());
+  const text = 'Part of a long article body sentence. '.repeat(100);
+  const out = await svc.translate(text);
+  assert.ok(urls.length >= Math.ceil(text.length / CHUNK_MAX_CHARS));
+  assert.equal(out, 'Часть. '.repeat(urls.length));
+  for (const u of urls) assert.ok(u.length < 6000, `url too long: ${u.length}`);
+});
